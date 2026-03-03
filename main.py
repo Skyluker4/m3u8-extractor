@@ -133,6 +133,8 @@ DEFAULTS = {
     "m3u8_filter": None,          # regex pattern to filter m3u8 URLs
     "adblock": False,             # load an adblocker extension in Chrome
     "adblock_extension": None,    # path to a custom .crx adblocker extension
+    "proxy": None,                # proxy for yt-dlp downloads (e.g. socks5://127.0.0.1:1080)
+    "browser_proxy": None,        # proxy for the Selenium browser
     # Download-mode flags (all False = default yt-dlp behaviour)
     "thumbnail": False,          # download thumbnail alongside video
     "thumbnail_only": False,
@@ -161,6 +163,8 @@ ENV_MAP = {
     "m3u8_filter":               "M3U8_FILTER",
     "adblock":                   "M3U8_ADBLOCK",
     "adblock_extension":         "M3U8_ADBLOCK_EXTENSION",
+    "proxy":                     "M3U8_PROXY",
+    "browser_proxy":             "M3U8_BROWSER_PROXY",
     "thumbnail":                "M3U8_THUMBNAIL",
     "thumbnail_only":           "M3U8_THUMBNAIL_ONLY",
     "captions":                 "M3U8_CAPTIONS",
@@ -273,6 +277,15 @@ def build_arg_parser():
     adb.add_argument("--adblock-extension",
                      help="Path to a custom .crx adblocker extension file")
 
+    # Proxy
+    prx = p.add_argument_group("proxy")
+    prx.add_argument("--proxy",
+                     help="Proxy for yt-dlp downloads "
+                          "(e.g. http://host:port, socks5://host:port)")
+    prx.add_argument("--browser-proxy",
+                     help="Proxy for the Selenium browser "
+                          "(defaults to --proxy if not set)")
+
     # Download-mode flags
     mode = p.add_argument_group("download mode")
     mode.add_argument("--thumbnail", action="store_true", default=None,
@@ -317,6 +330,8 @@ def load_cli_config(args_ns):
         "m3u8_filter": args_ns.m3u8_filter,
         "adblock": args_ns.adblock,
         "adblock_extension": args_ns.adblock_extension,
+        "proxy": args_ns.proxy,
+        "browser_proxy": args_ns.browser_proxy,
         "thumbnail": args_ns.thumbnail,
         "thumbnail_only": args_ns.thumbnail_only,
         "captions": args_ns.captions,
@@ -359,6 +374,8 @@ def _build_per_url_parser():
     p.add_argument("--m3u8-filter")
     p.add_argument("--adblock", action="store_true", default=None)
     p.add_argument("--adblock-extension")
+    p.add_argument("--proxy")
+    p.add_argument("--browser-proxy")
     p.add_argument("--thumbnail", action="store_true", default=None)
     p.add_argument("--thumbnail-only", action="store_true", default=None)
     p.add_argument("--captions", action="store_true", default=None)
@@ -480,6 +497,11 @@ def build_ydl_opts(config, title, output_path_override=None):
     if cookies:
         opts["cookiefile"] = cookies
 
+    # Proxy
+    proxy = config.get("proxy")
+    if proxy:
+        opts["proxy"] = proxy
+
     return opts, outtmpl
 
 
@@ -525,6 +547,11 @@ def _build_system_ytdlp_cmd(config, m3u8_url, title, output_path_override=None):
     cookies = config.get("cookies")
     if cookies:
         cmd += ["--cookies", cookies]
+
+    # Proxy
+    proxy = config.get("proxy")
+    if proxy:
+        cmd += ["--proxy", proxy]
 
     cmd.append(m3u8_url)
     return cmd, outtmpl
@@ -585,10 +612,20 @@ def _build_chrome_options(config):
             chrome_options.add_argument("--headless=new")
             chrome_options.add_extension(crx_path)
             log.info(f"Loaded adblocker: {crx_path}")
+            # Browser proxy (falls back to the download proxy if not set)
+            browser_proxy = config.get("browser_proxy") or config.get("proxy")
+            if browser_proxy:
+                chrome_options.add_argument(f"--proxy-server={browser_proxy}")
             return chrome_options
         log.warn("Continuing without adblock.")
 
     chrome_options.add_argument("--headless")
+
+    # Browser proxy (falls back to the download proxy if not set separately)
+    browser_proxy = config.get("browser_proxy") or config.get("proxy")
+    if browser_proxy:
+        chrome_options.add_argument(f"--proxy-server={browser_proxy}")
+
     return chrome_options
 
 

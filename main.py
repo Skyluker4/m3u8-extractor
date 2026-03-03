@@ -386,9 +386,9 @@ def merge_config(cli, env, toml_cfg):
 
 
 def _build_per_url_parser():
-    """Build a parser for per-URL inline options in the URLs file."""
+    """Build a parser for per-URL and group inline options in the URLs file."""
     p = argparse.ArgumentParser(add_help=False)
-    p.add_argument("url")
+    p.add_argument("url", nargs="?", default=None)
     p.add_argument("-o", "--output", dest="output_path")
     p.add_argument("--title-prefix")
     p.add_argument("--title-postfix")
@@ -447,6 +447,29 @@ def _parse_url_line(line, per_url_parser):
     if len(tokens) > 1:
         return url, {"output_path": " ".join(tokens[1:])}
     return url, {}
+
+
+def _parse_group_directive(line, per_url_parser):
+    """Parse a group directive line (starts with '---').
+
+    Format:  --- [--flag ...]
+    Returns a dict of group overrides, or {} to reset.
+    """
+    rest = line[3:].strip()
+    if not rest:
+        return {}
+    try:
+        tokens = shlex.split(rest)
+        args = per_url_parser.parse_args(tokens)
+        overrides = {}
+        for key, val in vars(args).items():
+            if key == "url" or val is None:
+                continue
+            overrides[key] = val
+        return overrides
+    except SystemExit:
+        log.warn(f"Could not parse group directive: {line}")
+        return {}
 
 
 # ---------------------------------------------------------------------------
@@ -939,20 +962,44 @@ def _resolve_worker_count(value, num_entries):
 
 
 def download_from_file(file_path, config):
-    """Read URLs from a file and download each one."""
+    """Read URLs from a file and download each one.
+
+    Supports group directives to set options for blocks of URLs:
+        --- --audio-only --quality best
+        https://example.com/song1
+        https://example.com/song2
+        ---
+        https://example.com/video   # group reset, back to global defaults
+    """
     per_url_parser = _build_per_url_parser()
     try:
         with open(file_path, "r") as f:
             lines = f.readlines()
 
         entries = []
+        group_overrides = {}
+
         for line in lines:
             line = line.strip()
             if not line or line.startswith("#"):
                 continue
+
+            # Group directive: --- [options]
+            if line.startswith("---"):
+                group_overrides = _parse_group_directive(line, per_url_parser)
+                if group_overrides:
+                    flags = " ".join(f"{k}={v}" for k, v in group_overrides.items())
+                    log.info(f"Group options set: {flags}")
+                else:
+                    log.info("Group options reset")
+                continue
+
             try:
-                url, overrides = _parse_url_line(line, per_url_parser)
-                entries.append((url, overrides))
+                url, url_overrides = _parse_url_line(line, per_url_parser)
+                # Merge: group options first, then per-URL overrides on top
+                merged = dict(group_overrides)
+                merged.update(url_overrides)
+                entries.append((url, merged))
             except SystemExit:
                 log.warn(f"Could not parse line: {line}")
                 continue

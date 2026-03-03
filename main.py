@@ -135,6 +135,7 @@ DEFAULTS = {
     "adblock_extension": None,    # path to a custom .crx adblocker extension
     "proxy": None,                # proxy for yt-dlp downloads (e.g. socks5://127.0.0.1:1080)
     "browser_proxy": None,        # proxy for the Selenium browser
+    "ignore_ssl_errors": False,   # ignore SSL certificate errors
     # Download-mode flags (all False = default yt-dlp behaviour)
     "thumbnail": False,          # download thumbnail alongside video
     "thumbnail_only": False,
@@ -165,6 +166,7 @@ ENV_MAP = {
     "adblock_extension":         "M3U8_ADBLOCK_EXTENSION",
     "proxy":                     "M3U8_PROXY",
     "browser_proxy":             "M3U8_BROWSER_PROXY",
+    "ignore_ssl_errors":         "M3U8_IGNORE_SSL_ERRORS",
     "thumbnail":                "M3U8_THUMBNAIL",
     "thumbnail_only":           "M3U8_THUMBNAIL_ONLY",
     "captions":                 "M3U8_CAPTIONS",
@@ -176,7 +178,7 @@ ENV_MAP = {
 
 BOOL_KEYS = {
     "use_base_url_as_referrer", "use_system_ytdlp", "adblock",
-    "thumbnail", "thumbnail_only",
+    "ignore_ssl_errors", "thumbnail", "thumbnail_only",
     "captions", "captions_only", "audio_only", "video_only",
     "video_and_captions_only",
 }
@@ -286,6 +288,10 @@ def build_arg_parser():
                      help="Proxy for the Selenium browser "
                           "(defaults to --proxy if not set)")
 
+    # SSL
+    p.add_argument("--ignore-ssl-errors", action="store_true", default=None,
+                   help="Ignore SSL certificate errors in both the browser and yt-dlp")
+
     # Download-mode flags
     mode = p.add_argument_group("download mode")
     mode.add_argument("--thumbnail", action="store_true", default=None,
@@ -332,6 +338,7 @@ def load_cli_config(args_ns):
         "adblock_extension": args_ns.adblock_extension,
         "proxy": args_ns.proxy,
         "browser_proxy": args_ns.browser_proxy,
+        "ignore_ssl_errors": args_ns.ignore_ssl_errors,
         "thumbnail": args_ns.thumbnail,
         "thumbnail_only": args_ns.thumbnail_only,
         "captions": args_ns.captions,
@@ -376,6 +383,7 @@ def _build_per_url_parser():
     p.add_argument("--adblock-extension")
     p.add_argument("--proxy")
     p.add_argument("--browser-proxy")
+    p.add_argument("--ignore-ssl-errors", action="store_true", default=None)
     p.add_argument("--thumbnail", action="store_true", default=None)
     p.add_argument("--thumbnail-only", action="store_true", default=None)
     p.add_argument("--captions", action="store_true", default=None)
@@ -502,6 +510,10 @@ def build_ydl_opts(config, title, output_path_override=None):
     if proxy:
         opts["proxy"] = proxy
 
+    # SSL
+    if config.get("ignore_ssl_errors"):
+        opts["nocheckcertificate"] = True
+
     return opts, outtmpl
 
 
@@ -552,6 +564,10 @@ def _build_system_ytdlp_cmd(config, m3u8_url, title, output_path_override=None):
     proxy = config.get("proxy")
     if proxy:
         cmd += ["--proxy", proxy]
+
+    # SSL
+    if config.get("ignore_ssl_errors"):
+        cmd.append("--no-check-certificates")
 
     cmd.append(m3u8_url)
     return cmd, outtmpl
@@ -616,6 +632,8 @@ def _build_chrome_options(config):
             browser_proxy = config.get("browser_proxy") or config.get("proxy")
             if browser_proxy:
                 chrome_options.add_argument(f"--proxy-server={browser_proxy}")
+            if config.get("ignore_ssl_errors"):
+                chrome_options.add_argument("--ignore-certificate-errors")
             return chrome_options
         log.warn("Continuing without adblock.")
 
@@ -625,6 +643,9 @@ def _build_chrome_options(config):
     browser_proxy = config.get("browser_proxy") or config.get("proxy")
     if browser_proxy:
         chrome_options.add_argument(f"--proxy-server={browser_proxy}")
+
+    if config.get("ignore_ssl_errors"):
+        chrome_options.add_argument("--ignore-certificate-errors")
 
     return chrome_options
 

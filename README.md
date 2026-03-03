@@ -278,4 +278,6 @@ m3u8-extractor --m3u8-filter "1080p" "https://example.com/video"
 
 ## License
 
-[AGPL-3.0-only](LICENSE)
+This project is licensed under the [GNU Affero General Public License v3.0](https://www.gnu.org/licenses/agpl-3.0.html) only (AGPL-3.0-only).
+
+See [LICENSE](LICENSE) for the full text.

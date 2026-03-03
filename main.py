@@ -226,6 +226,7 @@ def build_arg_parser():
     """Build the argparse CLI parser."""
     p = argparse.ArgumentParser(
         description="Extract m3u8 URLs from web pages and download with yt-dlp.",
+        epilog="Licensed under the GNU Affero General Public License v3.0 only (AGPL-3.0-only).",
     )
 
     p.add_argument("url", nargs="?", default=None,

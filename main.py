@@ -4,8 +4,10 @@ import time
 import re
 import json
 import shlex
+import shutil
 import argparse
 import subprocess
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
@@ -27,6 +29,120 @@ else:
 # ---------------------------------------------------------------------------
 # Pretty printing
 # ---------------------------------------------------------------------------
+class _ProgressTracker:
+    """Thread-safe live progress tracker for batch downloads."""
+
+    def __init__(self, total):
+        self._lock = threading.Lock()
+        self.total = total
+        self.completed = 0
+        self.failed = 0
+        self.bytes_downloaded = 0
+        self.bytes_total_known = 0  # sum of known totals from yt-dlp
+        self._active_totals = {}     # url -> total_bytes for current download
+        self._active_downloaded = {} # url -> downloaded_bytes for current download
+        self.start_time = time.time()
+        self._enabled = hasattr(sys.stdout, "isatty") and sys.stdout.isatty()
+        self._last_bar = ""
+
+    @property
+    def remaining(self):
+        return self.total - self.completed - self.failed
+
+    def record_success(self):
+        with self._lock:
+            self.completed += 1
+
+    def record_failure(self):
+        with self._lock:
+            self.failed += 1
+
+    def update_bytes(self, url, downloaded, total):
+        """Called from yt-dlp progress hook with per-URL byte counts."""
+        with self._lock:
+            self._active_downloaded[url] = downloaded or 0
+            if total and total > 0:
+                self._active_totals[url] = total
+
+    def finish_bytes(self, url):
+        """Mark a URL's bytes as finalised (move active → completed)."""
+        with self._lock:
+            final = self._active_downloaded.pop(url, 0)
+            self._active_totals.pop(url, None)
+            self.bytes_downloaded += final
+
+    def _format_bytes(self, n):
+        for unit in ("", "K", "M", "G", "T"):
+            if abs(n) < 1024:
+                return f"{n:.1f}{unit}B" if unit else f"{int(n)}B"
+            n /= 1024
+        return f"{n:.1f}PB"
+
+    def clear_bar(self):
+        """Clear the progress bar line."""
+        if not self._enabled or not self._last_bar:
+            return
+        sys.stdout.write("\r\033[K")
+        sys.stdout.flush()
+
+    def draw_bar(self):
+        """Draw the progress bar on the current line."""
+        if not self._enabled:
+            return
+        with self._lock:
+            elapsed = time.time() - self.start_time
+            done = self.completed + self.failed
+            pct = (done / self.total * 100) if self.total else 0
+
+            # ETA calculation
+            if done > 0 and done < self.total:
+                eta_secs = (elapsed / done) * (self.total - done)
+                eta = self._format_time(eta_secs)
+            else:
+                eta = "--:--"
+
+            # Bytes: sum completed + active in-progress
+            active_bytes = sum(self._active_downloaded.values())
+            total_downloaded = self.bytes_downloaded + active_bytes
+
+            # Build the progress bar
+            term_width = shutil.get_terminal_size((80, 24)).columns
+            bar_width = max(10, min(30, term_width - 70))
+            filled = int(bar_width * done / self.total) if self.total else 0
+            bar = "█" * filled + "░" * (bar_width - filled)
+
+            status_parts = [
+                f"\033[96m{bar}\033[0m",
+                f"{pct:5.1f}%",
+                f"\033[92m{self.completed}\033[0m done",
+            ]
+            if self.failed:
+                status_parts.append(f"\033[91m{self.failed}\033[0m fail")
+            status_parts.extend([
+                f"{self.remaining} left",
+                f"{self._format_bytes(total_downloaded)}",
+                f"{self._format_time(elapsed)}",
+                f"ETA {eta}",
+            ])
+
+            line = " │ ".join(status_parts)
+
+        self._last_bar = line
+        sys.stdout.write(f"\r\033[K{line}")
+        sys.stdout.flush()
+
+    def _format_time(self, seconds):
+        m, s = divmod(int(seconds), 60)
+        h, m = divmod(m, 60)
+        if h:
+            return f"{h}:{m:02d}:{s:02d}"
+        return f"{m}:{s:02d}"
+
+
+# Global tracker instance (set during batch downloads)
+_tracker = None
+
+
 class _Style:
     """ANSI escape helpers — degrades gracefully when not a TTY."""
 
@@ -46,40 +162,51 @@ class _Style:
         return f"{code}{text}{cls.RESET}" if cls._enabled else text
 
     @classmethod
+    def _print(cls, msg):
+        """Print a message, handling progress bar if active."""
+        global _tracker
+        if _tracker is not None:
+            _tracker.clear_bar()
+            print(msg)
+            _tracker.draw_bar()
+        else:
+            print(msg)
+
+    @classmethod
     def info(cls, msg):
-        print(f"{cls._c(cls.CYAN, 'ℹ')}  {msg}")
+        cls._print(f"{cls._c(cls.CYAN, 'ℹ')}  {msg}")
 
     @classmethod
     def success(cls, msg):
-        print(f"{cls._c(cls.GREEN, '✔')}  {msg}")
+        cls._print(f"{cls._c(cls.GREEN, '✔')}  {msg}")
 
     @classmethod
     def warn(cls, msg):
-        print(f"{cls._c(cls.YELLOW, '⚠')}  {msg}")
+        cls._print(f"{cls._c(cls.YELLOW, '⚠')}  {msg}")
 
     @classmethod
     def error(cls, msg):
-        print(f"{cls._c(cls.RED, '✖')}  {msg}")
+        cls._print(f"{cls._c(cls.RED, '✖')}  {msg}")
 
     @classmethod
     def step(cls, msg):
-        print(f"{cls._c(cls.BLUE, '▸')}  {msg}")
+        cls._print(f"{cls._c(cls.BLUE, '▸')}  {msg}")
 
     @classmethod
     def detail(cls, msg):
-        print(f"   {cls._c(cls.DIM, msg)}")
+        cls._print(f"   {cls._c(cls.DIM, msg)}")
 
     @classmethod
     def header(cls, msg):
         if cls._enabled:
-            print(f"\n{cls.BOLD}{msg}{cls.RESET}")
+            cls._print(f"\n{cls.BOLD}{msg}{cls.RESET}")
         else:
-            print(f"\n{msg}")
+            cls._print(f"\n{msg}")
 
     @classmethod
     def list_item(cls, index, text):
         idx = cls._c(cls.DIM, f"[{index}]")
-        print(f"   {idx} {text}")
+        cls._print(f"   {idx} {text}")
 
 
 log = _Style
@@ -675,6 +802,20 @@ def build_ydl_opts(config, title, output_path_override=None):
     # SSL
     if config.get("ignore_ssl_errors"):
         opts["nocheckcertificate"] = True
+
+    # Progress tracking (when running in batch/parallel mode)
+    tracker = _tracker
+    if tracker is not None:
+        src_url = config.get("_tracker_url", "")
+        def _progress_hook(d, _url=src_url, _t=tracker):
+            if d.get("status") == "downloading":
+                _t.update_bytes(_url, d.get("downloaded_bytes", 0),
+                                d.get("total_bytes") or d.get("total_bytes_estimate"))
+                _t.draw_bar()
+            elif d.get("status") == "finished":
+                _t.update_bytes(_url, d.get("downloaded_bytes", 0),
+                                d.get("total_bytes") or d.get("total_bytes_estimate"))
+        opts["progress_hooks"] = [_progress_hook]
 
     return opts, outtmpl
 
@@ -1274,6 +1415,7 @@ def fetch_m3u8_and_download(url, config, output_path_override=None, per_url_over
     """
     # Merge per-URL overrides on top of the global config
     effective_config = dict(config)
+    effective_config["_tracker_url"] = url
 
     # Remove internal keys that shouldn't propagate as yt-dlp options
     url_rules = effective_config.pop("_url_rules", [])
@@ -1478,17 +1620,32 @@ def download_from_file(file_path, config):
 
         results = []
         start_time = time.time()
+        global _tracker
 
         if workers <= 1 or len(entries) == 1:
+            _tracker = _ProgressTracker(len(entries))
             for i, (url, overrides) in enumerate(entries, 1):
                 log.step(f"[{i}/{len(entries)}] {url}")
                 try:
                     ok, err = fetch_m3u8_and_download(url, config, per_url_overrides=overrides)
+                    if ok:
+                        _tracker.record_success()
+                    else:
+                        _tracker.record_failure()
+                    _tracker.finish_bytes(url)
+                    _tracker.draw_bar()
                     results.append((url, ok, err))
                 except Exception as exc:
                     log.error(f"Failed: {url} — {exc}")
+                    _tracker.record_failure()
+                    _tracker.finish_bytes(url)
+                    _tracker.draw_bar()
                     results.append((url, False, str(exc)))
+            _tracker.clear_bar()
+            print()  # newline after progress bar
+            _tracker = None
         else:
+            _tracker = _ProgressTracker(len(entries))
             with ThreadPoolExecutor(max_workers=workers) as pool:
                 futures = {
                     pool.submit(
@@ -1500,10 +1657,22 @@ def download_from_file(file_path, config):
                     src_url = futures[future]
                     try:
                         ok, err = future.result()
+                        if ok:
+                            _tracker.record_success()
+                        else:
+                            _tracker.record_failure()
+                        _tracker.finish_bytes(src_url)
+                        _tracker.draw_bar()
                         results.append((src_url, ok, err))
                     except Exception as exc:
                         log.error(f"Failed: {src_url} — {exc}")
+                        _tracker.record_failure()
+                        _tracker.finish_bytes(src_url)
+                        _tracker.draw_bar()
                         results.append((src_url, False, str(exc)))
+            _tracker.clear_bar()
+            print()  # newline after progress bar
+            _tracker = None
 
         elapsed = time.time() - start_time
         _print_summary(results, elapsed)

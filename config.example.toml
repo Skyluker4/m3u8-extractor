@@ -56,6 +56,7 @@
 # ── Parallelism ──────────────────────────────────────────────────────────────
 
 # parallel = "all"                     # "all", a number, "cores", or "logical_cores"
+# speed_unit = "bytes"                 # "bytes" (KB/s, MB/s) or "bits" (Kbps, Mbps)
 
 # ── m3u8 selection ───────────────────────────────────────────────────────────
 

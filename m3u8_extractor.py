@@ -32,7 +32,7 @@ else:
 class _ProgressTracker:
     """Thread-safe live progress tracker for batch downloads."""
 
-    def __init__(self, total):
+    def __init__(self, total, speed_unit="bytes"):
         self._lock = threading.Lock()
         self.total = total
         self.completed = 0
@@ -41,9 +41,37 @@ class _ProgressTracker:
         self.bytes_total_known = 0  # sum of known totals from yt-dlp
         self._active_totals = {}     # url -> total_bytes for current download
         self._active_downloaded = {} # url -> downloaded_bytes for current download
+        self._prev_bytes = 0         # for speed calculation
+        self._prev_time = 0.0        # for speed calculation
+        self._speed = 0.0            # smoothed bytes/sec
+        self._speed_unit = str(speed_unit).strip().lower()  # "bytes" or "bits"
         self.start_time = time.time()
+        self._prev_time = self.start_time
         self._enabled = hasattr(sys.stdout, "isatty") and sys.stdout.isatty()
         self._last_bar = ""
+        self._scroll_region_set = False
+
+    def setup_scroll_region(self):
+        """Reserve the bottom terminal line for the progress bar."""
+        if not self._enabled:
+            return
+        term_h = shutil.get_terminal_size((80, 24)).lines
+        # Set scroll region to all lines except the last
+        sys.stdout.write(f"\033[1;{term_h - 1}r")
+        # Move cursor to top of scroll region (safe starting point)
+        sys.stdout.write(f"\033[{term_h - 1};0H")
+        sys.stdout.flush()
+        self._scroll_region_set = True
+
+    def reset_scroll_region(self):
+        """Restore the full terminal scroll region."""
+        if not self._enabled or not self._scroll_region_set:
+            return
+        self.clear_bar()
+        # Reset scroll region to full terminal
+        sys.stdout.write("\033[r")
+        sys.stdout.flush()
+        self._scroll_region_set = False
 
     @property
     def remaining(self):
@@ -78,15 +106,43 @@ class _ProgressTracker:
             n /= 1024
         return f"{n:.1f}PB"
 
+    def _format_speed(self, bytes_per_sec):
+        """Format speed as bytes/s or bits/s according to config."""
+        if self._speed_unit == "bits":
+            return self._format_rate(bytes_per_sec * 8, 1000, "bps")
+        return self._format_rate(bytes_per_sec, 1024, "B/s")
+
+    @staticmethod
+    def _format_rate(val, base, suffix):
+        for prefix in ("", "K", "M", "G", "T"):
+            if abs(val) < base:
+                return f"{val:.1f} {prefix}{suffix}" if prefix else f"{int(val)} {suffix}"
+            val /= base
+        return f"{val:.1f} P{suffix}"
+
+    def _update_speed(self, total_downloaded):
+        """Calculate smoothed download speed."""
+        now = time.time()
+        dt = now - self._prev_time
+        if dt >= 0.5:  # update speed every 0.5s to avoid jitter
+            delta_bytes = total_downloaded - self._prev_bytes
+            instant = delta_bytes / dt if dt > 0 else 0
+            # Exponential moving average (α = 0.3)
+            self._speed = 0.3 * instant + 0.7 * self._speed
+            self._prev_bytes = total_downloaded
+            self._prev_time = now
+
     def clear_bar(self):
-        """Clear the progress bar line."""
+        """Clear the progress bar from the bottom line."""
         if not self._enabled or not self._last_bar:
             return
-        sys.stdout.write("\r\033[K")
+        term_h = shutil.get_terminal_size((80, 24)).lines
+        sys.stdout.write(f"\033[s\033[{term_h};0H\033[K\033[u")
         sys.stdout.flush()
+        self._last_bar = ""
 
     def draw_bar(self):
-        """Draw the progress bar on the current line."""
+        """Draw the progress bar pinned to the bottom of the terminal."""
         if not self._enabled:
             return
         with self._lock:
@@ -105,8 +161,14 @@ class _ProgressTracker:
             active_bytes = sum(self._active_downloaded.values())
             total_downloaded = self.bytes_downloaded + active_bytes
 
+            # Speed
+            self._update_speed(total_downloaded)
+            speed_str = self._format_speed(self._speed)
+
             # Build the progress bar
-            term_width = shutil.get_terminal_size((80, 24)).columns
+            term_size = shutil.get_terminal_size((80, 24))
+            term_width = term_size.columns
+            term_h = term_size.lines
             bar_width = max(10, min(30, term_width - 70))
             filled = int(bar_width * done / self.total) if self.total else 0
             bar = "█" * filled + "░" * (bar_width - filled)
@@ -121,6 +183,7 @@ class _ProgressTracker:
             status_parts.extend([
                 f"{self.remaining} left",
                 f"{self._format_bytes(total_downloaded)}",
+                speed_str,
                 f"{self._format_time(elapsed)}",
                 f"ETA {eta}",
             ])
@@ -128,7 +191,8 @@ class _ProgressTracker:
             line = " │ ".join(status_parts)
 
         self._last_bar = line
-        sys.stdout.write(f"\r\033[K{line}")
+        # Save cursor, jump to bottom row, write bar, restore cursor
+        sys.stdout.write(f"\033[s\033[{term_h};0H\033[K{line}\033[u")
         sys.stdout.flush()
 
     def _format_time(self, seconds):
@@ -166,7 +230,8 @@ class _Style:
         """Print a message, handling progress bar if active."""
         global _tracker
         if _tracker is not None:
-            _tracker.clear_bar()
+            # Text prints normally inside the scroll region;
+            # the pinned bottom bar stays untouched.
             print(msg)
             _tracker.draw_bar()
         else:
@@ -283,6 +348,7 @@ DEFAULTS = {
     "video_and_captions_only": False,
     "overwrite": True,           # overwrite existing files (set False to skip)
     "ytdlp_args": None,           # extra raw arguments forwarded to yt-dlp
+    "speed_unit": "bytes",         # "bytes" (KB/s, MB/s) or "bits" (Kbps, Mbps)
 }
 
 # Map config keys -> environment variable names
@@ -324,6 +390,7 @@ ENV_MAP = {
     "video_and_captions_only":  "M3U8_VIDEO_AND_CAPTIONS_ONLY",
     "overwrite":                "M3U8_OVERWRITE",
     "ytdlp_args":               "M3U8_YTDLP_ARGS",
+    "speed_unit":               "M3U8_SPEED_UNIT",
 }
 
 BOOL_KEYS = {
@@ -441,6 +508,9 @@ def build_arg_parser():
     par.add_argument("-p", "--parallel",
                      help="Number of parallel downloads: a number, 'all' (default), "
                           "'cores' (physical CPU cores), or 'logical_cores'")
+    par.add_argument("--speed-unit",
+                     help="Speed display unit in progress bar: 'bytes' (default, e.g. MB/s) "
+                          "or 'bits' (e.g. Mbps)")
 
     # m3u8 / video selection
     m3u8 = p.add_argument_group("stream selection")
@@ -572,6 +642,7 @@ def load_cli_config(args_ns):
         "video_only": args_ns.video_only,
         "video_and_captions_only": args_ns.video_and_captions_only,
         "ytdlp_args": args_ns.ytdlp_args,
+        "speed_unit": args_ns.speed_unit,
     }
     for key, val in mapping.items():
         if val is not None:
@@ -636,6 +707,7 @@ def _build_per_url_parser():
     p.add_argument("--overwrite", action="store_true", default=None)
     p.add_argument("--no-overwrite", action="store_true", default=None)
     p.add_argument("--ytdlp-args")
+    p.add_argument("--speed-unit")
     return p
 
 
@@ -1393,7 +1465,7 @@ def _interactive_select(urls, label="stream"):
     global _tracker
     paused_tracker = _tracker
     if paused_tracker is not None:
-        paused_tracker.clear_bar()
+        paused_tracker.reset_scroll_region()
         _tracker = None
 
     try:
@@ -1401,6 +1473,7 @@ def _interactive_select(urls, label="stream"):
     finally:
         if paused_tracker is not None:
             _tracker = paused_tracker
+            _tracker.setup_scroll_region()
             _tracker.draw_bar()
 
 
@@ -1791,8 +1864,11 @@ def download_from_file(file_path, config):
         start_time = time.time()
         global _tracker
 
+        speed_unit = config.get("speed_unit", "bytes")
+
         if workers <= 1 or len(entries) == 1:
-            _tracker = _ProgressTracker(len(entries))
+            _tracker = _ProgressTracker(len(entries), speed_unit=speed_unit)
+            _tracker.setup_scroll_region()
             for i, (url, overrides) in enumerate(entries, 1):
                 log.step(f"[{i}/{len(entries)}] {url}")
                 try:
@@ -1810,11 +1886,11 @@ def download_from_file(file_path, config):
                     _tracker.finish_bytes(url)
                     _tracker.draw_bar()
                     results.append((url, False, str(exc)))
-            _tracker.clear_bar()
-            print()  # newline after progress bar
+            _tracker.reset_scroll_region()
             _tracker = None
         else:
-            _tracker = _ProgressTracker(len(entries))
+            _tracker = _ProgressTracker(len(entries), speed_unit=speed_unit)
+            _tracker.setup_scroll_region()
             with ThreadPoolExecutor(max_workers=workers) as pool:
                 futures = {
                     pool.submit(
@@ -1839,8 +1915,7 @@ def download_from_file(file_path, config):
                         _tracker.finish_bytes(src_url)
                         _tracker.draw_bar()
                         results.append((src_url, False, str(exc)))
-            _tracker.clear_bar()
-            print()  # newline after progress bar
+            _tracker.reset_scroll_region()
             _tracker = None
 
         elapsed = time.time() - start_time

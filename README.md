@@ -103,6 +103,7 @@ If no URL is given and `--watch` is not set, URLs are read from a file (`urls.tx
 | Flag               | Description                                                                          |
 | ------------------ | ------------------------------------------------------------------------------------ |
 | `-p`, `--parallel` | Number of parallel downloads: a number, `all` (default), `cores`, or `logical_cores` |
+| `--speed-unit`     | Speed display in progress bar: `bytes` (default, e.g. MB/s) or `bits` (e.g. Mbps)   |
 
 ### Stream selection
 
@@ -191,6 +192,7 @@ title_postfix = ""
 quality = "bestvideo+bestaudio"
 transcode = "mp4"
 parallel = "all"
+speed_unit = "bytes"   # "bytes" (KB/s, MB/s) or "bits" (Kbps, Mbps)
 
 referrer = ""
 use_base_url_as_referrer = false
@@ -268,6 +270,7 @@ M3U8_USE_SYSTEM_YTDLP=false
 M3U8_EXTRACTOR=auto
 M3U8_EXTRACTORS=""
 M3U8_PARALLEL=all
+M3U8_SPEED_UNIT=bytes
 M3U8_SELECT=first
 M3U8_FILTER=""
 M3U8_ADBLOCK=false

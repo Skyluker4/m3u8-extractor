@@ -564,11 +564,23 @@ def _match_url_rules(url, url_rules):
 # ---------------------------------------------------------------------------
 # yt-dlp option builder
 # ---------------------------------------------------------------------------
+def _sanitise_title(title):
+    """Remove or replace characters that are illegal in filenames."""
+    # Replace path separators and other problematic chars with a dash
+    title = re.sub(r'[/\\]', ' - ', title)
+    # Remove characters illegal on Windows/Linux/macOS: : * ? " < > |
+    title = re.sub(r'[:\*\?"<>|]', '', title)
+    # Collapse multiple spaces/dashes
+    title = re.sub(r'\s{2,}', ' ', title).strip()
+    title = re.sub(r'-{2,}', '-', title).strip(' -')
+    return title or "video"
+
+
 def _resolve_outtmpl(config, title, output_path_override):
     """Determine the output template string."""
     prefix = config.get("title_prefix", "")
     postfix = config.get("title_postfix", "")
-    effective_title = f"{prefix}{title}{postfix}"
+    effective_title = _sanitise_title(f"{prefix}{title}{postfix}")
 
     out = output_path_override or config.get("output_path")
     if not out:

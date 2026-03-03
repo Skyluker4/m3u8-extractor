@@ -47,6 +47,7 @@
 # ── Adblock ──────────────────────────────────────────────────────────────────
 
 # adblock = false                      # Load uBlock Origin Lite in Chrome
+# adblock_strictness = "complete"      # "basic", "optimal", or "complete"
 # adblock_extension = ""               # Path to a custom .crx adblocker extension
 
 # ── Download modes ───────────────────────────────────────────────────────────

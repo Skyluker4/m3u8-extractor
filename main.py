@@ -133,6 +133,7 @@ DEFAULTS = {
     "m3u8_filter": None,          # regex pattern to filter m3u8 URLs
     "adblock": False,             # load an adblocker extension in Chrome
     "adblock_extension": None,    # path to a custom .crx adblocker extension
+    "adblock_strictness": "complete",  # "basic", "optimal", or "complete"
     "proxy": None,                # proxy for yt-dlp downloads (e.g. socks5://127.0.0.1:1080)
     "browser_proxy": None,        # proxy for the Selenium browser
     "ignore_ssl_errors": False,   # ignore SSL certificate errors
@@ -166,6 +167,7 @@ ENV_MAP = {
     "m3u8_filter":               "M3U8_FILTER",
     "adblock":                   "M3U8_ADBLOCK",
     "adblock_extension":         "M3U8_ADBLOCK_EXTENSION",
+    "adblock_strictness":        "M3U8_ADBLOCK_STRICTNESS",
     "proxy":                     "M3U8_PROXY",
     "browser_proxy":             "M3U8_BROWSER_PROXY",
     "ignore_ssl_errors":         "M3U8_IGNORE_SSL_ERRORS",
@@ -293,6 +295,9 @@ def build_arg_parser():
     adb.add_argument("--adblock", action="store_true", default=None,
                      help="Load an adblocker extension in Chrome "
                           "(uses bundled uBlock Origin Lite by default)")
+    adb.add_argument("--adblock-strictness",
+                     help="Filtering strictness for the built-in adblocker: "
+                          "'basic', 'optimal', or 'complete' (default)")
     adb.add_argument("--adblock-extension",
                      help="Path to a custom .crx adblocker extension file")
 
@@ -368,6 +373,7 @@ def load_cli_config(args_ns):
         "m3u8_select": args_ns.m3u8_select,
         "m3u8_filter": args_ns.m3u8_filter,
         "adblock": args_ns.adblock,
+        "adblock_strictness": args_ns.adblock_strictness,
         "adblock_extension": args_ns.adblock_extension,
         "proxy": args_ns.proxy,
         "browser_proxy": args_ns.browser_proxy,
@@ -415,6 +421,7 @@ def _build_per_url_parser():
     p.add_argument("--m3u8-select")
     p.add_argument("--m3u8-filter")
     p.add_argument("--adblock", action="store_true", default=None)
+    p.add_argument("--adblock-strictness")
     p.add_argument("--adblock-extension")
     p.add_argument("--proxy")
     p.add_argument("--browser-proxy")
@@ -666,6 +673,8 @@ DEFAULT_ADBLOCK_URL = (
     "response=redirect&prodversion=126.0&acceptformat=crx2,crx3"
     "&x=id%3Dddkjiahejlhfcafbddmgiahcphecmpfh%26uc"  # uBlock Origin Lite
 )
+DEFAULT_ADBLOCK_EXT_ID = "ddkjiahejlhfcafbddmgiahcphecmpfh"
+_STRICTNESS_LEVELS = {"basic": 1, "optimal": 2, "complete": 3}
 
 
 def _get_adblock_extension(config):
@@ -733,6 +742,36 @@ def _build_chrome_options(config):
         chrome_options.add_argument("--ignore-certificate-errors")
 
     return chrome_options
+
+
+def _apply_adblock_strictness(driver, config):
+    """Set the uBlock Origin Lite filtering mode after the extension loads."""
+    if not (config.get("adblock") or config.get("adblock_extension")):
+        return
+    # Only applies to the built-in uBOL; custom extensions manage their own settings
+    if config.get("adblock_extension"):
+        return
+
+    level_name = str(config.get("adblock_strictness", "optimal")).strip().lower()
+    level_num = _STRICTNESS_LEVELS.get(level_name)
+    if level_num is None:
+        log.warn(f"Unknown adblock strictness '{level_name}' "
+                 f"(expected: {', '.join(_STRICTNESS_LEVELS)}), using 'complete'")
+        level_num = _STRICTNESS_LEVELS["complete"]
+
+    if level_num == _STRICTNESS_LEVELS["optimal"]:
+        return  # optimal is uBOL's built-in default, nothing to change
+
+    ext_url = f"chrome-extension://{DEFAULT_ADBLOCK_EXT_ID}/dashboard.html"
+    try:
+        driver.get(ext_url)
+        driver.execute_script(
+            "return chrome.storage.local.set({defaultFilteringMode: %d})" % level_num
+        )
+        time.sleep(0.5)  # let the setting propagate
+        log.detail(f"Adblock strictness set to '{level_name}'")
+    except Exception as e:
+        log.warn(f"Could not set adblock strictness: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -954,6 +993,7 @@ def fetch_m3u8_and_download(url, config, output_path_override=None, per_url_over
     # --- Selenium m3u8 extraction ("auto" fallback or "m3u8") ---
     chrome_options = _build_chrome_options(effective_config)
     driver = webdriver.Chrome(options=chrome_options)
+    _apply_adblock_strictness(driver, effective_config)
 
     try:
         m3u8_urls, page_title = extract_m3u8(driver, url)

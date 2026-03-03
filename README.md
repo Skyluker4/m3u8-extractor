@@ -109,10 +109,11 @@ If no URL is given and `--watch` is not set, URLs are read from a file (`urls.tx
 
 ### Adblock
 
-| Flag                  | Description                                                      |
-| --------------------- | ---------------------------------------------------------------- |
-| `--adblock`           | Load uBlock Origin Lite in Chrome (auto-downloaded on first use) |
-| `--adblock-extension` | Path to a custom `.crx` adblocker extension                      |
+| Flag                   | Description                                                      |
+| ---------------------- | ---------------------------------------------------------------- |
+| `--adblock`            | Load uBlock Origin Lite in Chrome (auto-downloaded on first use) |
+| `--adblock-strictness` | Filtering level: `basic`, `optimal`, or `complete` (default)     |
+| `--adblock-extension`  | Path to a custom `.crx` adblocker extension                      |
 
 ### Extractor selection
 

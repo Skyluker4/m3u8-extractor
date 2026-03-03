@@ -21,10 +21,39 @@ else:
 
 
 # ---------------------------------------------------------------------------
+# Default paths
+# ---------------------------------------------------------------------------
+APP_NAME = "m3u8-extractor"
+
+
+def _default_config_dir():
+    """Return the XDG-compliant config directory for the app.
+
+    Search order: $XDG_CONFIG_HOME/m3u8-extractor, ~/.config/m3u8-extractor.
+    """
+    xdg = os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config"))
+    return os.path.join(xdg, APP_NAME)
+
+
+def _resolve_default_file(filename):
+    """Resolve a config/data file: CWD first, then the user config dir."""
+    if os.path.isfile(filename):
+        return filename
+    user_path = os.path.join(_default_config_dir(), filename)
+    if os.path.isfile(user_path):
+        return user_path
+    # Fall back to CWD name (will produce a clear error if missing)
+    return filename
+
+
+DEFAULT_CONFIG_FILE = "config.toml"
+DEFAULT_URLS_FILE = "urls.txt"
+
+# ---------------------------------------------------------------------------
 # Default configuration
 # ---------------------------------------------------------------------------
 DEFAULTS = {
-    "urls_file": "urls.txt",
+    "urls_file": DEFAULT_URLS_FILE,
     "output_path": None,
     "title_prefix": "",
     "title_postfix": "",
@@ -115,7 +144,8 @@ def build_arg_parser():
     )
 
     p.add_argument("-f", "--urls-file",
-                   help="Path to file containing URLs (default: urls.txt)")
+                   help="Path to file containing URLs "
+                        "(default: ./urls.txt or ~/.config/m3u8-extractor/urls.txt)")
     p.add_argument("-o", "--output-path",
                    help="Default output directory or filename template")
     p.add_argument("--title-prefix",
@@ -151,7 +181,8 @@ def build_arg_parser():
                       help="Download video and captions only (no audio)")
 
     p.add_argument("-c", "--config",
-                   help="Path to TOML config file (default: config.toml)")
+                   help="Path to TOML config file "
+                        "(default: ./config.toml or ~/.config/m3u8-extractor/config.toml)")
 
     return p
 
@@ -378,15 +409,16 @@ def main():
     parser = build_arg_parser()
     args = parser.parse_args()
 
-    # Load configs in priority order
-    toml_path = args.config or "config.toml"
+    # Resolve config file: explicit flag > CWD > user config dir
+    toml_path = args.config or _resolve_default_file(DEFAULT_CONFIG_FILE)
     toml_cfg = load_toml_config(toml_path)
     env_cfg = load_env_config()
     cli_cfg = load_cli_config(args)
 
     config = merge_config(cli_cfg, env_cfg, toml_cfg)
 
-    urls_file = config["urls_file"]
+    # Resolve URLs file: explicit config value > CWD > user config dir
+    urls_file = _resolve_default_file(config["urls_file"])
     download_from_file(urls_file, config)
 
 

@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 import os
 import sys
 import time
@@ -32,7 +34,7 @@ else:
 class _ProgressTracker:
     """Thread-safe live progress tracker for batch downloads."""
 
-    def __init__(self, total, speed_unit="bytes"):
+    def __init__(self, total, speed_unit="bytes", max_active=1):
         self._lock = threading.Lock()
         self.total = total
         self.completed = 0
@@ -41,10 +43,13 @@ class _ProgressTracker:
         self.bytes_total_known = 0  # sum of known totals from yt-dlp
         self._active_totals = {}     # url -> total_bytes for current download
         self._active_downloaded = {} # url -> downloaded_bytes for current download
+        self._active_info = {}       # url -> dict with per-download display info
         self._prev_bytes = 0         # for speed calculation
         self._prev_time = 0.0        # for speed calculation
         self._speed = 0.0            # smoothed bytes/sec
         self._speed_unit = str(speed_unit).strip().lower()  # "bytes" or "bits"
+        self._max_active = max(1, int(max_active))
+        self._reserved_lines = 1 + self._max_active  # download lines + summary bar
         self.start_time = time.time()
         self._prev_time = self.start_time
         self._enabled = hasattr(sys.stdout, "isatty") and sys.stdout.isatty()
@@ -52,14 +57,13 @@ class _ProgressTracker:
         self._scroll_region_set = False
 
     def setup_scroll_region(self):
-        """Reserve the bottom terminal line for the progress bar."""
+        """Reserve the bottom terminal lines for download progress + summary bar."""
         if not self._enabled:
             return
         term_h = shutil.get_terminal_size((80, 24)).lines
-        # Set scroll region to all lines except the last
-        sys.stdout.write(f"\033[1;{term_h - 1}r")
-        # Move cursor to top of scroll region (safe starting point)
-        sys.stdout.write(f"\033[{term_h - 1};0H")
+        scroll_end = max(1, term_h - self._reserved_lines)
+        sys.stdout.write(f"\033[1;{scroll_end}r")
+        sys.stdout.write(f"\033[{scroll_end};0H")
         sys.stdout.flush()
         self._scroll_region_set = True
 
@@ -68,7 +72,6 @@ class _ProgressTracker:
         if not self._enabled or not self._scroll_region_set:
             return
         self.clear_bar()
-        # Reset scroll region to full terminal
         sys.stdout.write("\033[r")
         sys.stdout.flush()
         self._scroll_region_set = False
@@ -85,18 +88,24 @@ class _ProgressTracker:
         with self._lock:
             self.failed += 1
 
-    def update_bytes(self, url, downloaded, total):
-        """Called from yt-dlp progress hook with per-URL byte counts."""
+    def update_bytes(self, url, downloaded, total, info=None):
+        """Called from yt-dlp progress hook with per-URL byte counts.
+
+        info: optional dict with keys like 'filename', 'speed', 'eta'.
+        """
         with self._lock:
             self._active_downloaded[url] = downloaded or 0
             if total and total > 0:
                 self._active_totals[url] = total
+            if info is not None:
+                self._active_info[url] = info
 
     def finish_bytes(self, url):
         """Mark a URL's bytes as finalised (move active → completed)."""
         with self._lock:
             final = self._active_downloaded.pop(url, 0)
             self._active_totals.pop(url, None)
+            self._active_info.pop(url, None)
             self.bytes_downloaded += final
 
     def _format_bytes(self, n):
@@ -133,16 +142,75 @@ class _ProgressTracker:
             self._prev_time = now
 
     def clear_bar(self):
-        """Clear the progress bar from the bottom line."""
+        """Clear all reserved bottom lines (download lines + summary bar)."""
         if not self._enabled or not self._last_bar:
             return
         term_h = shutil.get_terminal_size((80, 24)).lines
-        sys.stdout.write(f"\033[s\033[{term_h};0H\033[K\033[u")
+        first_row = term_h - self._reserved_lines + 1
+        buf = "\033[s"  # save cursor
+        for row in range(first_row, term_h + 1):
+            buf += f"\033[{row};0H\033[K"
+        buf += "\033[u"  # restore cursor
+        sys.stdout.write(buf)
         sys.stdout.flush()
         self._last_bar = ""
 
+    def _build_download_line(self, url, term_width):
+        """Build a single per-download progress line."""
+        downloaded = self._active_downloaded.get(url, 0)
+        total = self._active_totals.get(url)
+        info = self._active_info.get(url, {})
+
+        # Filename (truncate to fit)
+        fname = info.get("filename", "")
+        if fname:
+            fname = os.path.basename(fname)
+
+        # Percentage
+        if total and total > 0:
+            pct = min(downloaded / total * 100, 100)
+            pct_str = f"{pct:5.1f}%"
+        else:
+            pct_str = "  ???"
+
+        # Size
+        total_str = self._format_bytes(total) if total else "?"
+        dl_str = self._format_bytes(downloaded)
+
+        # Speed from yt-dlp hook
+        speed = info.get("speed")
+        if speed and speed > 0:
+            speed_str = self._format_speed(speed)
+        else:
+            speed_str = "--- B/s"
+
+        # ETA from yt-dlp hook
+        eta = info.get("eta")
+        if eta is not None and eta >= 0:
+            eta_str = f"ETA {self._format_time(eta)}"
+        else:
+            eta_str = "ETA --:--"
+
+        # Fragment info
+        frag = info.get("fragment_index")
+        frag_count = info.get("fragment_count")
+        frag_str = f"frag {frag}/{frag_count}" if frag and frag_count else ""
+
+        parts = [pct_str, f"{dl_str}/{total_str}", speed_str, eta_str]
+        if frag_str:
+            parts.append(frag_str)
+        detail = " │ ".join(parts)
+
+        if fname:
+            # Truncate filename if the line is too long
+            max_fname = term_width - len(detail) - 6  # 6 for "  ↳  " + padding
+            if max_fname > 10 and len(fname) > max_fname:
+                fname = fname[: max_fname - 1] + "…"
+            return f"  \033[2m↳\033[0m {fname}  {detail}"
+        return f"  \033[2m↳\033[0m {detail}"
+
     def draw_bar(self):
-        """Draw the progress bar pinned to the bottom of the terminal."""
+        """Draw per-download progress lines + summary bar at the terminal bottom."""
         if not self._enabled:
             return
         with self._lock:
@@ -150,7 +218,6 @@ class _ProgressTracker:
             done = self.completed + self.failed
 
             # Fractional progress: count finished items + partial progress
-            # from active downloads (based on bytes downloaded / total bytes)
             active_frac = 0.0
             for url, downloaded in self._active_downloaded.items():
                 total = self._active_totals.get(url)
@@ -159,7 +226,7 @@ class _ProgressTracker:
             effective_done = done + active_frac
             pct = (effective_done / self.total * 100) if self.total else 0
 
-            # ETA calculation — use effective_done so ETA works during downloads
+            # ETA calculation
             if effective_done > 0 and effective_done < self.total:
                 eta_secs = (elapsed / effective_done) * (self.total - effective_done)
                 eta = self._format_time(eta_secs)
@@ -174,11 +241,11 @@ class _ProgressTracker:
             self._update_speed(total_downloaded)
             speed_str = self._format_speed(self._speed)
 
-            # Build the progress bar
+            # Build the summary bar
             term_size = shutil.get_terminal_size((80, 24))
             term_width = term_size.columns
             term_h = term_size.lines
-            bar_width = max(10, min(30, term_width - 70))
+            bar_width = max(10, min(30, term_width - 80))
             filled = int(bar_width * effective_done / self.total) if self.total else 0
             bar = "█" * filled + "░" * (bar_width - filled)
 
@@ -196,12 +263,30 @@ class _ProgressTracker:
                 f"{self._format_time(elapsed)}",
                 f"ETA {eta}",
             ])
+            summary_line = " │ ".join(status_parts)
 
-            line = " │ ".join(status_parts)
+            # Build per-download progress lines
+            active_urls = list(self._active_info.keys())
+            download_lines = []
+            for url in active_urls[: self._max_active]:
+                download_lines.append(self._build_download_line(url, term_width))
 
-        self._last_bar = line
-        # Save cursor, jump to bottom row, write bar, restore cursor
-        sys.stdout.write(f"\033[s\033[{term_h};0H\033[K{line}\033[u")
+        # Render: download lines, then summary bar, all at the bottom
+        first_row = term_h - self._reserved_lines + 1
+        buf = "\033[s"  # save cursor
+        row = first_row
+        # Write download lines (fill unused slots with blanks)
+        for i in range(self._max_active):
+            buf += f"\033[{row};0H\033[K"
+            if i < len(download_lines):
+                buf += download_lines[i]
+            row += 1
+        # Write summary bar on the last row
+        buf += f"\033[{term_h};0H\033[K{summary_line}"
+        buf += "\033[u"  # restore cursor
+
+        self._last_bar = summary_line
+        sys.stdout.write(buf)
         sys.stdout.flush()
 
     def _format_time(self, seconds):
@@ -946,14 +1031,23 @@ def build_ydl_opts(config, title, output_path_override=None):
     if tracker is not None:
         src_url = config.get("_tracker_url", "")
         def _progress_hook(d, _url=src_url, _t=tracker):
+            dl_bytes = d.get("downloaded_bytes", 0)
+            total = d.get("total_bytes") or d.get("total_bytes_estimate")
             if d.get("status") == "downloading":
-                _t.update_bytes(_url, d.get("downloaded_bytes", 0),
-                                d.get("total_bytes") or d.get("total_bytes_estimate"))
+                info = {
+                    "filename": d.get("filename") or d.get("tmpfilename", ""),
+                    "speed": d.get("speed"),
+                    "eta": d.get("eta"),
+                    "fragment_index": d.get("fragment_index"),
+                    "fragment_count": d.get("fragment_count"),
+                }
+                _t.update_bytes(_url, dl_bytes, total, info)
                 _t.draw_bar()
             elif d.get("status") == "finished":
-                _t.update_bytes(_url, d.get("downloaded_bytes", 0),
-                                d.get("total_bytes") or d.get("total_bytes_estimate"))
+                _t.update_bytes(_url, dl_bytes, total)
         opts["progress_hooks"] = [_progress_hook]
+        # Suppress yt-dlp's own console progress — our tracker handles display
+        opts["noprogress"] = True
 
     return opts, outtmpl
 
@@ -1029,6 +1123,10 @@ def _build_system_ytdlp_cmd(config, m3u8_url, title, output_path_override=None):
     # Overwrite
     if not config.get("overwrite", True):
         cmd.append("--no-overwrites")
+
+    # Suppress yt-dlp's own progress when our tracker is active
+    if _tracker is not None:
+        cmd.append("--no-progress")
 
     # Extra yt-dlp arguments (system mode: splice raw tokens before the URL)
     ytdlp_args = config.get("ytdlp_args")
@@ -1801,6 +1899,10 @@ def _print_summary(results, elapsed):
     results: list of (url, success: bool, error: str|None)
     elapsed: total time in seconds
     """
+    # Clear any leftover \r-based progress remnants from yt-dlp
+    sys.stdout.write("\r\033[K")
+    sys.stdout.flush()
+
     succeeded = [r for r in results if r[1]]
     failed = [r for r in results if not r[1]]
 
@@ -1876,7 +1978,7 @@ def download_from_file(file_path, config):
         speed_unit = config.get("speed_unit", "bytes")
 
         if workers <= 1 or len(entries) == 1:
-            _tracker = _ProgressTracker(len(entries), speed_unit=speed_unit)
+            _tracker = _ProgressTracker(len(entries), speed_unit=speed_unit, max_active=1)
             _tracker.setup_scroll_region()
             for i, (url, overrides) in enumerate(entries, 1):
                 log.step(f"[{i}/{len(entries)}] {url}")
@@ -1898,7 +2000,7 @@ def download_from_file(file_path, config):
             _tracker.reset_scroll_region()
             _tracker = None
         else:
-            _tracker = _ProgressTracker(len(entries), speed_unit=speed_unit)
+            _tracker = _ProgressTracker(len(entries), speed_unit=speed_unit, max_active=workers)
             _tracker.setup_scroll_region()
             with ThreadPoolExecutor(max_workers=workers) as pool:
                 futures = {

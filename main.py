@@ -47,11 +47,11 @@ def fetch_m3u8_and_download(url):
                 base_url, m3u8_url
             )  # Join the base URL and the relative m3u8 URL
 
-            # If the URL still starts with "t:", prepend a valid base URL
+            # If the URL still starts with "t:", prepend the source base URL
             if m3u8_url.startswith("t:"):
                 m3u8_url = (
-                    "https://example.com" + m3u8_url[2:]
-                )  # Replace with the actual domain
+                    url + m3u8_url[2:]
+                )
 
         if not m3u8_url:
             print("m3u8 URL not found in the page source.")

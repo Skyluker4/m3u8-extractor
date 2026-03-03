@@ -1,3 +1,4 @@
+import os
 import time
 import re
 from selenium import webdriver
@@ -6,7 +7,7 @@ import yt_dlp
 from urllib.parse import urljoin
 
 
-def fetch_m3u8_and_download(url):
+def fetch_m3u8_and_download(url, output_path=None):
     # Configure WebDriver options
     chrome_options = Options()
     chrome_options.add_argument(
@@ -63,16 +64,33 @@ def fetch_m3u8_and_download(url):
         # Download the video using yt-dlp
         if m3u8_url:
             print(f"Found m3u8 URL: {m3u8_url}")
-            print(f"Downloading {page_title}...")
+
+            # Determine output template from output_path or fall back to page title
+            if output_path:
+                # If output_path is a directory (ends with / or exists as dir), use page title inside it
+                if output_path.endswith(os.sep) or os.path.isdir(output_path):
+                    outtmpl = os.path.join(output_path, f"{page_title}.%(ext)s")
+                else:
+                    # Treat as a full filename (or path + filename)
+                    # If it already has an extension, use as-is; otherwise append .%(ext)s
+                    _, ext = os.path.splitext(output_path)
+                    if ext:
+                        outtmpl = output_path
+                    else:
+                        outtmpl = f"{output_path}.%(ext)s"
+            else:
+                outtmpl = f"{page_title}.%(ext)s"
+
+            print(f"Downloading to {outtmpl}...")
 
             ydl_opts = {
-                "outtmpl": f"{page_title}.%(ext)s",  # Use the page title for the filename
+                "outtmpl": outtmpl,
                 "quiet": False,
             }
 
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 ydl.download([m3u8_url])
-            print(f"Download completed: {page_title}")
+            print(f"Download completed: {outtmpl}")
         else:
             print("No valid m3u8 URL found.")
     except Exception as e:
@@ -86,15 +104,23 @@ def download_from_file(file_path):
         with open(file_path, "r") as file:
             urls = file.readlines()
 
-        # Clean URLs (remove empty lines and strip whitespace)
-        urls = [url.strip() for url in urls if url.strip()]
+        # Parse lines: each line is "URL" or "URL custom_title_or_path"
+        entries = []
+        for line in urls:
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split(None, 1)  # Split on first whitespace
+            url = parts[0]
+            output_path = parts[1] if len(parts) > 1 else None
+            entries.append((url, output_path))
 
-        if not urls:
+        if not entries:
             print("No URLs found in the file.")
             return
 
-        for url in urls:
-            fetch_m3u8_and_download(url)
+        for url, output_path in entries:
+            fetch_m3u8_and_download(url, output_path)
 
     except FileNotFoundError:
         print(f"Error: File '{file_path}' not found.")

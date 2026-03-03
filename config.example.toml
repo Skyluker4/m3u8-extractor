@@ -1,0 +1,56 @@
+# m3u8-extractor example configuration
+# Place this file at ./config.toml or ~/.config/m3u8-extractor/config.toml
+
+# ── Paths ────────────────────────────────────────────────────────────────────
+
+# urls_file = "urls.txt"               # Path to the URL list file
+# output_path = "downloads/"           # Default output directory or filename template
+
+# ── Title ────────────────────────────────────────────────────────────────────
+
+# title_prefix = ""                    # Prepended to every output filename
+# title_postfix = ""                   # Appended to every output filename (before extension)
+
+# ── Network ──────────────────────────────────────────────────────────────────
+
+# referrer = ""                        # Referer header for requests
+# use_base_url_as_referrer = false     # Auto-set referer from each page's base URL
+# cookies = ""                         # Path to a Netscape-format cookies file
+# proxy = ""                           # Proxy for yt-dlp (e.g. "socks5://127.0.0.1:1080")
+# browser_proxy = ""                   # Proxy for Chrome (defaults to proxy if not set)
+# ignore_ssl_errors = false            # Ignore SSL certificate errors everywhere
+
+# ── Quality & transcoding ────────────────────────────────────────────────────
+
+# quality = "bestvideo+bestaudio"      # yt-dlp format selector
+# transcode = "mp4"                    # Post-download transcode format (mp4, mkv, etc.)
+
+# ── yt-dlp binary ────────────────────────────────────────────────────────────
+
+# use_system_ytdlp = false             # Use the system yt-dlp binary instead of Python lib
+# yt_dlp_path = "/usr/local/bin/yt-dlp"  # Path to a specific yt-dlp binary
+
+# ── Parallelism ──────────────────────────────────────────────────────────────
+
+# parallel = "all"                     # "all", a number, "cores", or "logical_cores"
+
+# ── m3u8 selection ───────────────────────────────────────────────────────────
+
+# m3u8_select = "first"               # "first", "last", or "all"
+# m3u8_filter = ""                    # Regex to filter m3u8 URLs before selection
+
+# ── Adblock ──────────────────────────────────────────────────────────────────
+
+# adblock = false                      # Load uBlock Origin Lite in Chrome
+# adblock_extension = ""               # Path to a custom .crx adblocker extension
+
+# ── Download modes ───────────────────────────────────────────────────────────
+# All false by default (standard yt-dlp behaviour: download everything)
+
+# thumbnail = false                    # Download thumbnail alongside the video
+# thumbnail_only = false               # Download only the thumbnail
+# captions = false                     # Download captions alongside the video
+# captions_only = false                # Download only captions
+# audio_only = false                   # Download only the audio stream
+# video_only = false                   # Download only the video stream (no audio)
+# video_and_captions_only = false      # Download video and captions only (no audio)

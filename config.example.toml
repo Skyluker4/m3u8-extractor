@@ -19,6 +19,7 @@
 # proxy = ""                           # Proxy for yt-dlp (e.g. "socks5://127.0.0.1:1080")
 # browser_proxy = ""                   # Proxy for Chrome (defaults to proxy if not set)
 # ignore_ssl_errors = false            # Ignore SSL certificate errors
+# user_agent = ""                      # Custom User-Agent string for requests and browser
 
 # ── localStorage ──────────────────────────────────────────────────────────────
 # Set localStorage entries on the target domain before the page loads.

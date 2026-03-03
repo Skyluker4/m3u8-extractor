@@ -71,6 +71,7 @@ If no URL is given and `--watch` is not set, URLs are read from a file (`urls.tx
 | `--referrer`                 | Referer header for requests                            |
 | `--use-base-url-as-referrer` | Auto-set referer from each page's base URL             |
 | `--cookies`                  | Path to Netscape-format cookies file                   |
+| `--user-agent`               | Custom User-Agent for yt-dlp and browser requests      |
 | `-q`, `--quality`            | yt-dlp format selector (e.g. `bestvideo+bestaudio`)    |
 | `--transcode`                | Transcode to format after download (e.g. `mp4`, `mkv`) |
 | `-c`, `--config`             | Path to TOML config file                               |

@@ -269,6 +269,7 @@ DEFAULTS = {
     "proxy": None,                # proxy for yt-dlp downloads (e.g. socks5://127.0.0.1:1080)
     "browser_proxy": None,        # proxy for the Selenium browser
     "ignore_ssl_errors": False,   # ignore SSL certificate errors
+    "user_agent": None,           # custom User-Agent string for requests and browser
     "localstorage": None,           # localStorage key=value pairs to set before page load
     "extractor": "auto",            # "auto", "ytdlp", or "m3u8"
     "extractors": None,             # comma-separated allowlist of yt-dlp extractors
@@ -310,6 +311,7 @@ ENV_MAP = {
     "proxy":                     "M3U8_PROXY",
     "browser_proxy":             "M3U8_BROWSER_PROXY",
     "ignore_ssl_errors":         "M3U8_IGNORE_SSL_ERRORS",
+    "user_agent":                "M3U8_USER_AGENT",
     "localstorage":              "M3U8_LOCALSTORAGE",
     "extractor":                 "M3U8_EXTRACTOR",
     "extractors":                "M3U8_EXTRACTORS",
@@ -416,6 +418,8 @@ def build_arg_parser():
                    help="Automatically use each page URL as the Referer header")
     p.add_argument("--cookies",
                    help="Path to a Netscape-format cookies file")
+    p.add_argument("--user-agent",
+                   help="Custom User-Agent string for yt-dlp and browser requests")
     p.add_argument("--header", action="append", metavar="NAME=VALUE",
                    help="Custom HTTP header (repeatable, e.g. --header 'X-Token=abc')")
     p.add_argument("--auth", metavar="USER:PASS",
@@ -539,6 +543,7 @@ def load_cli_config(args_ns):
         "referrer": args_ns.referrer,
         "use_base_url_as_referrer": args_ns.use_base_url_as_referrer,
         "cookies": args_ns.cookies,
+        "user_agent": args_ns.user_agent,
         "headers": args_ns.header,
         "auth": args_ns.auth,
         "quality": args_ns.quality,
@@ -600,6 +605,7 @@ def _build_per_url_parser():
     p.add_argument("--referrer")
     p.add_argument("--use-base-url-as-referrer", action="store_true", default=None)
     p.add_argument("--cookies")
+    p.add_argument("--user-agent")
     p.add_argument("--header", dest="headers", action="append")
     p.add_argument("--auth")
     p.add_argument("-q", "--quality")
@@ -806,6 +812,11 @@ def build_ydl_opts(config, title, output_path_override=None):
     if referrer:
         opts.setdefault("http_headers", {})["Referer"] = referrer
 
+    # User-Agent
+    user_agent = config.get("user_agent")
+    if user_agent:
+        opts.setdefault("http_headers", {})["User-Agent"] = user_agent
+
     # Cookies
     cookies = config.get("cookies")
     if cookies:
@@ -903,6 +914,11 @@ def _build_system_ytdlp_cmd(config, m3u8_url, title, output_path_override=None):
     referrer = config.get("referrer")
     if referrer:
         cmd += ["--referer", referrer]
+
+    # User-Agent
+    user_agent = config.get("user_agent")
+    if user_agent:
+        cmd += ["--user-agent", user_agent]
 
     # Cookies
     cookies = config.get("cookies")
@@ -1009,6 +1025,12 @@ def _build_chrome_options(config):
                 chrome_options.add_argument(f"--proxy-server={browser_proxy}")
             if config.get("ignore_ssl_errors"):
                 chrome_options.add_argument("--ignore-certificate-errors")
+
+            # User-Agent
+            user_agent = config.get("user_agent")
+            if user_agent:
+                chrome_options.add_argument(f"--user-agent={user_agent}")
+
             return chrome_options
         log.warn("Continuing without adblock.")
 
@@ -1021,6 +1043,11 @@ def _build_chrome_options(config):
 
     if config.get("ignore_ssl_errors"):
         chrome_options.add_argument("--ignore-certificate-errors")
+
+    # User-Agent
+    user_agent = config.get("user_agent")
+    if user_agent:
+        chrome_options.add_argument(f"--user-agent={user_agent}")
 
     return chrome_options
 

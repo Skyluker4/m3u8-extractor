@@ -2,6 +2,7 @@ import os
 import sys
 import time
 import re
+import shlex
 import argparse
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
@@ -225,6 +226,58 @@ def merge_config(cli, env, toml_cfg):
     return merged
 
 
+def _build_per_url_parser():
+    """Build a parser for per-URL inline options in the URLs file."""
+    p = argparse.ArgumentParser(add_help=False)
+    p.add_argument("url")
+    p.add_argument("-o", "--output", dest="output_path")
+    p.add_argument("--title-prefix")
+    p.add_argument("--title-postfix")
+    p.add_argument("--referrer")
+    p.add_argument("--use-base-url-as-referrer", action="store_true", default=None)
+    p.add_argument("--cookies")
+    p.add_argument("-q", "--quality")
+    p.add_argument("--transcode")
+    p.add_argument("--thumbnail", action="store_true", default=None)
+    p.add_argument("--thumbnail-only", action="store_true", default=None)
+    p.add_argument("--captions", action="store_true", default=None)
+    p.add_argument("--captions-only", action="store_true", default=None)
+    p.add_argument("--audio-only", action="store_true", default=None)
+    p.add_argument("--video-only", action="store_true", default=None)
+    p.add_argument("--video-and-captions-only", action="store_true", default=None)
+    return p
+
+
+def _parse_url_line(line, per_url_parser):
+    """Parse a single line from the URLs file.
+
+    Supports three formats:
+      1. URL
+      2. URL title-or-path           (legacy: no -- flags)
+      3. URL [--flag ...] [-o path]  (rich: any per-URL option)
+
+    Returns (url, per_url_overrides_dict).
+    """
+    tokens = shlex.split(line)
+    # If the line contains any --flag, use the full per-URL parser
+    has_flags = any(t.startswith("-") for t in tokens[1:])
+    if has_flags:
+        args = per_url_parser.parse_args(tokens)
+        url = args.url
+        overrides = {}
+        for key, val in vars(args).items():
+            if key == "url" or val is None:
+                continue
+            overrides[key] = val
+        return url, overrides
+
+    # Legacy format: URL [optional title/path]
+    url = tokens[0]
+    if len(tokens) > 1:
+        return url, {"output_path": " ".join(tokens[1:])}
+    return url, {}
+
+
 # ---------------------------------------------------------------------------
 # yt-dlp option builder
 # ---------------------------------------------------------------------------
@@ -336,8 +389,17 @@ def extract_m3u8(driver, url):
     return m3u8_url, page_title
 
 
-def fetch_m3u8_and_download(url, config, output_path_override=None):
+def fetch_m3u8_and_download(url, config, output_path_override=None, per_url_overrides=None):
     """Extract the m3u8 URL from a page and download with yt-dlp."""
+    # Merge per-URL overrides on top of the global config
+    effective_config = dict(config)
+    if per_url_overrides:
+        effective_config.update(per_url_overrides)
+
+    # output_path from per-URL overrides takes precedence
+    if output_path_override is None:
+        output_path_override = effective_config.pop("output_path", None)
+
     chrome_options = Options()
     chrome_options.add_argument("--headless")
     driver = webdriver.Chrome(options=chrome_options)
@@ -352,7 +414,6 @@ def fetch_m3u8_and_download(url, config, output_path_override=None):
         driver.quit()
 
         # If use_base_url_as_referrer, set referrer from the page URL
-        effective_config = dict(config)
         if effective_config.get("use_base_url_as_referrer") and not effective_config.get("referrer"):
             parsed = urlparse(url)
             effective_config["referrer"] = f"{parsed.scheme}://{parsed.netloc}/"
@@ -377,6 +438,7 @@ def fetch_m3u8_and_download(url, config, output_path_override=None):
 
 def download_from_file(file_path, config):
     """Read URLs from a file and download each one."""
+    per_url_parser = _build_per_url_parser()
     try:
         with open(file_path, "r") as f:
             lines = f.readlines()
@@ -386,17 +448,19 @@ def download_from_file(file_path, config):
             line = line.strip()
             if not line or line.startswith("#"):
                 continue
-            parts = line.split(None, 1)
-            url = parts[0]
-            output_path = parts[1] if len(parts) > 1 else None
-            entries.append((url, output_path))
+            try:
+                url, overrides = _parse_url_line(line, per_url_parser)
+                entries.append((url, overrides))
+            except SystemExit:
+                print(f"Warning: could not parse line: {line}")
+                continue
 
         if not entries:
             print("No URLs found in the file.")
             return
 
-        for url, output_path in entries:
-            fetch_m3u8_and_download(url, config, output_path)
+        for url, overrides in entries:
+            fetch_m3u8_and_download(url, config, per_url_overrides=overrides)
 
     except FileNotFoundError:
         print(f"Error: File '{file_path}' not found.")

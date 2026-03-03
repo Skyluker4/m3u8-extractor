@@ -5,6 +5,7 @@ import re
 import shlex
 import argparse
 import subprocess
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 import yt_dlp
@@ -66,6 +67,7 @@ DEFAULTS = {
     "transcode": None,
     "yt_dlp_path": None,         # custom path to yt-dlp binary
     "use_system_ytdlp": False,   # use system yt-dlp instead of Python library
+    "parallel": "all",           # "all", number, "cores", "logical_cores"
     # Download-mode flags (all False = default yt-dlp behaviour)
     "thumbnail": False,          # download thumbnail alongside video
     "thumbnail_only": False,
@@ -89,6 +91,7 @@ ENV_MAP = {
     "transcode":                "M3U8_TRANSCODE",
     "yt_dlp_path":              "M3U8_YT_DLP_PATH",
     "use_system_ytdlp":         "M3U8_USE_SYSTEM_YTDLP",
+    "parallel":                  "M3U8_PARALLEL",
     "thumbnail":                "M3U8_THUMBNAIL",
     "thumbnail_only":           "M3U8_THUMBNAIL_ONLY",
     "captions":                 "M3U8_CAPTIONS",
@@ -179,6 +182,12 @@ def build_arg_parser():
     ydlp.add_argument("--yt-dlp-path",
                       help="Path to a specific yt-dlp binary")
 
+    # Parallelism
+    par = p.add_argument_group("parallelism")
+    par.add_argument("-p", "--parallel",
+                     help="Number of parallel downloads: a number, 'all' (default), "
+                          "'cores' (physical CPU cores), or 'logical_cores'")
+
     # Download-mode flags
     mode = p.add_argument_group("download mode")
     mode.add_argument("--thumbnail", action="store_true", default=None,
@@ -218,6 +227,7 @@ def load_cli_config(args_ns):
         "transcode": args_ns.transcode,
         "yt_dlp_path": args_ns.yt_dlp_path,
         "use_system_ytdlp": args_ns.use_system_ytdlp,
+        "parallel": args_ns.parallel,
         "thumbnail": args_ns.thumbnail,
         "thumbnail_only": args_ns.thumbnail_only,
         "captions": args_ns.captions,
@@ -255,6 +265,7 @@ def _build_per_url_parser():
     p.add_argument("--transcode")
     p.add_argument("--use-system-ytdlp", action="store_true", default=None)
     p.add_argument("--yt-dlp-path")
+    p.add_argument("-p", "--parallel")
     p.add_argument("--thumbnail", action="store_true", default=None)
     p.add_argument("--thumbnail-only", action="store_true", default=None)
     p.add_argument("--captions", action="store_true", default=None)
@@ -514,6 +525,36 @@ def fetch_m3u8_and_download(url, config, output_path_override=None, per_url_over
             pass
 
 
+def _resolve_worker_count(value, num_entries):
+    """Resolve the parallel worker count from config value.
+
+    Accepted values:
+      - "all"           → one worker per entry (unlimited)
+      - "cores"         → number of physical CPU cores
+      - "logical_cores" → number of logical CPU cores (os.cpu_count())
+      - an integer       → that exact number
+    """
+    if value is None:
+        value = "all"
+    val = str(value).strip().lower()
+    if val == "all":
+        return num_entries
+    if val == "cores":
+        try:
+            count = len(os.sched_getaffinity(0))
+        except AttributeError:
+            count = os.cpu_count() or 1
+        return count
+    if val in ("logical_cores", "logical"):
+        return os.cpu_count() or 1
+    try:
+        n = int(val)
+        return max(1, n)
+    except ValueError:
+        print(f"Warning: unrecognised parallel value '{value}', defaulting to all")
+        return num_entries
+
+
 def download_from_file(file_path, config):
     """Read URLs from a file and download each one."""
     per_url_parser = _build_per_url_parser()
@@ -537,8 +578,26 @@ def download_from_file(file_path, config):
             print("No URLs found in the file.")
             return
 
-        for url, overrides in entries:
-            fetch_m3u8_and_download(url, config, per_url_overrides=overrides)
+        workers = _resolve_worker_count(config.get("parallel"), len(entries))
+
+        if workers <= 1 or len(entries) == 1:
+            for url, overrides in entries:
+                fetch_m3u8_and_download(url, config, per_url_overrides=overrides)
+        else:
+            print(f"Downloading {len(entries)} URLs with {workers} parallel workers...")
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                futures = {
+                    pool.submit(
+                        fetch_m3u8_and_download, url, config, None, overrides
+                    ): url
+                    for url, overrides in entries
+                }
+                for future in as_completed(futures):
+                    src_url = futures[future]
+                    try:
+                        future.result()
+                    except Exception as exc:
+                        print(f"Error downloading {src_url}: {exc}")
 
     except FileNotFoundError:
         print(f"Error: File '{file_path}' not found.")

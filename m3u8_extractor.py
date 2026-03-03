@@ -148,11 +148,20 @@ class _ProgressTracker:
         with self._lock:
             elapsed = time.time() - self.start_time
             done = self.completed + self.failed
-            pct = (done / self.total * 100) if self.total else 0
 
-            # ETA calculation
-            if done > 0 and done < self.total:
-                eta_secs = (elapsed / done) * (self.total - done)
+            # Fractional progress: count finished items + partial progress
+            # from active downloads (based on bytes downloaded / total bytes)
+            active_frac = 0.0
+            for url, downloaded in self._active_downloaded.items():
+                total = self._active_totals.get(url)
+                if total and total > 0:
+                    active_frac += min(downloaded / total, 1.0)
+            effective_done = done + active_frac
+            pct = (effective_done / self.total * 100) if self.total else 0
+
+            # ETA calculation — use effective_done so ETA works during downloads
+            if effective_done > 0 and effective_done < self.total:
+                eta_secs = (elapsed / effective_done) * (self.total - effective_done)
                 eta = self._format_time(eta_secs)
             else:
                 eta = "--:--"
@@ -170,7 +179,7 @@ class _ProgressTracker:
             term_width = term_size.columns
             term_h = term_size.lines
             bar_width = max(10, min(30, term_width - 70))
-            filled = int(bar_width * done / self.total) if self.total else 0
+            filled = int(bar_width * effective_done / self.total) if self.total else 0
             bar = "█" * filled + "░" * (bar_width - filled)
 
             status_parts = [

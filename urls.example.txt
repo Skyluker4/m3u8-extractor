@@ -1,0 +1,20 @@
+# m3u8-extractor example URL list
+# Place this file at ./urls.txt or ~/.config/m3u8-extractor/urls.txt
+
+# ── Basic: just a URL (uses the page title as filename) ─────────────────────
+
+# https://example.com/video1
+# https://example.com/video2
+
+# ── With a custom title or output path ──────────────────────────────────────
+
+# https://example.com/video3 My Custom Title
+# https://example.com/video4 downloads/Lecture 01
+
+# ── With per-URL option flags ───────────────────────────────────────────────
+
+# https://example.com/video5 --audio-only -o "music/song"
+# https://example.com/video6 --captions -q "bestvideo+bestaudio"
+# https://example.com/video7 -o "clips/" --thumbnail --transcode mkv
+# https://example.com/video8 --referrer "https://example.com" --adblock
+# https://example.com/video9 --m3u8-select all --ignore-ssl-errors

@@ -1,116 +1,359 @@
 import os
+import sys
 import time
 import re
+import argparse
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 import yt_dlp
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
+
+if sys.version_info >= (3, 11):
+    import tomllib
+else:
+    try:
+        import tomllib
+    except ImportError:
+        try:
+            import tomli as tomllib
+        except ImportError:
+            tomllib = None
 
 
-def fetch_m3u8_and_download(url, output_path=None):
-    # Configure WebDriver options
+# ---------------------------------------------------------------------------
+# Default configuration
+# ---------------------------------------------------------------------------
+DEFAULTS = {
+    "urls_file": "urls.txt",
+    "output_path": None,
+    "title_prefix": "",
+    "title_postfix": "",
+    "referrer": None,
+    "use_base_url_as_referrer": False,
+    "cookies": None,
+    "quality": None,
+    "transcode": None,
+    # Download-mode flags (all False = default yt-dlp behaviour)
+    "thumbnail": False,          # download thumbnail alongside video
+    "thumbnail_only": False,
+    "captions": False,           # download captions alongside video
+    "captions_only": False,
+    "audio_only": False,
+    "video_only": False,
+    "video_and_captions_only": False,
+}
+
+# Map config keys -> environment variable names
+ENV_MAP = {
+    "urls_file":                "M3U8_URLS_FILE",
+    "output_path":              "M3U8_OUTPUT_PATH",
+    "title_prefix":             "M3U8_TITLE_PREFIX",
+    "title_postfix":            "M3U8_TITLE_POSTFIX",
+    "referrer":                 "M3U8_REFERRER",
+    "use_base_url_as_referrer": "M3U8_USE_BASE_URL_AS_REFERRER",
+    "cookies":                  "M3U8_COOKIES",
+    "quality":                  "M3U8_QUALITY",
+    "transcode":                "M3U8_TRANSCODE",
+    "thumbnail":                "M3U8_THUMBNAIL",
+    "thumbnail_only":           "M3U8_THUMBNAIL_ONLY",
+    "captions":                 "M3U8_CAPTIONS",
+    "captions_only":            "M3U8_CAPTIONS_ONLY",
+    "audio_only":               "M3U8_AUDIO_ONLY",
+    "video_only":               "M3U8_VIDEO_ONLY",
+    "video_and_captions_only":  "M3U8_VIDEO_AND_CAPTIONS_ONLY",
+}
+
+BOOL_KEYS = {
+    "use_base_url_as_referrer", "thumbnail", "thumbnail_only",
+    "captions", "captions_only", "audio_only", "video_only",
+    "video_and_captions_only",
+}
+
+
+# ---------------------------------------------------------------------------
+# Configuration loading helpers
+# ---------------------------------------------------------------------------
+def _parse_bool(value):
+    """Parse a string to a boolean."""
+    if isinstance(value, bool):
+        return value
+    return str(value).lower() in ("1", "true", "yes", "on")
+
+
+def load_toml_config(path="config.toml"):
+    """Load configuration from a TOML file (if it exists)."""
+    if tomllib is None:
+        return {}
+    if not os.path.isfile(path):
+        return {}
+    with open(path, "rb") as f:
+        data = tomllib.load(f) or {}
+    # Normalise bools
+    for key in BOOL_KEYS:
+        if key in data:
+            data[key] = _parse_bool(data[key])
+    return data
+
+
+def load_env_config():
+    """Load configuration from environment variables."""
+    cfg = {}
+    for key, env_var in ENV_MAP.items():
+        val = os.environ.get(env_var)
+        if val is not None:
+            if key in BOOL_KEYS:
+                cfg[key] = _parse_bool(val)
+            else:
+                cfg[key] = val
+    return cfg
+
+
+def build_arg_parser():
+    """Build the argparse CLI parser."""
+    p = argparse.ArgumentParser(
+        description="Extract m3u8 URLs from web pages and download with yt-dlp.",
+    )
+
+    p.add_argument("-f", "--urls-file",
+                   help="Path to file containing URLs (default: urls.txt)")
+    p.add_argument("-o", "--output-path",
+                   help="Default output directory or filename template")
+    p.add_argument("--title-prefix",
+                   help="String to prepend to every output filename")
+    p.add_argument("--title-postfix",
+                   help="String to append to every output filename (before extension)")
+    p.add_argument("--referrer",
+                   help="Referer header to send with requests")
+    p.add_argument("--use-base-url-as-referrer", action="store_true", default=None,
+                   help="Automatically use each page URL as the Referer header")
+    p.add_argument("--cookies",
+                   help="Path to a Netscape-format cookies file")
+    p.add_argument("-q", "--quality",
+                   help="yt-dlp format / quality selector (e.g. 'bestvideo+bestaudio')")
+    p.add_argument("--transcode",
+                   help="Transcode to this format after download (e.g. mp4, mkv)")
+
+    # Download-mode flags
+    mode = p.add_argument_group("download mode")
+    mode.add_argument("--thumbnail", action="store_true", default=None,
+                      help="Download the thumbnail alongside the video")
+    mode.add_argument("--thumbnail-only", action="store_true", default=None,
+                      help="Download only the thumbnail")
+    mode.add_argument("--captions", action="store_true", default=None,
+                      help="Download captions alongside the video")
+    mode.add_argument("--captions-only", action="store_true", default=None,
+                      help="Download only the captions")
+    mode.add_argument("--audio-only", action="store_true", default=None,
+                      help="Download only the audio stream")
+    mode.add_argument("--video-only", action="store_true", default=None,
+                      help="Download only the video stream (no audio)")
+    mode.add_argument("--video-and-captions-only", action="store_true", default=None,
+                      help="Download video and captions only (no audio)")
+
+    p.add_argument("-c", "--config",
+                   help="Path to TOML config file (default: config.toml)")
+
+    return p
+
+
+def load_cli_config(args_ns):
+    """Convert the argparse Namespace to a config dict (only set keys)."""
+    cfg = {}
+    mapping = {
+        "urls_file": args_ns.urls_file,
+        "output_path": args_ns.output_path,
+        "title_prefix": args_ns.title_prefix,
+        "title_postfix": args_ns.title_postfix,
+        "referrer": args_ns.referrer,
+        "use_base_url_as_referrer": args_ns.use_base_url_as_referrer,
+        "cookies": args_ns.cookies,
+        "quality": args_ns.quality,
+        "transcode": args_ns.transcode,
+        "thumbnail": args_ns.thumbnail,
+        "thumbnail_only": args_ns.thumbnail_only,
+        "captions": args_ns.captions,
+        "captions_only": args_ns.captions_only,
+        "audio_only": args_ns.audio_only,
+        "video_only": args_ns.video_only,
+        "video_and_captions_only": args_ns.video_and_captions_only,
+    }
+    for key, val in mapping.items():
+        if val is not None:
+            cfg[key] = val
+    return cfg
+
+
+def merge_config(cli, env, toml_cfg):
+    """Merge configs with priority: CLI > env vars > TOML > defaults."""
+    merged = dict(DEFAULTS)
+    merged.update(toml_cfg)
+    merged.update(env)
+    merged.update(cli)
+    return merged
+
+
+# ---------------------------------------------------------------------------
+# yt-dlp option builder
+# ---------------------------------------------------------------------------
+def _resolve_outtmpl(config, title, output_path_override):
+    """Determine the output template string."""
+    prefix = config.get("title_prefix", "")
+    postfix = config.get("title_postfix", "")
+    effective_title = f"{prefix}{title}{postfix}"
+
+    out = output_path_override or config.get("output_path")
+    if not out:
+        return f"{effective_title}.%(ext)s"
+
+    if out.endswith(os.sep) or os.path.isdir(out):
+        return os.path.join(out, f"{effective_title}.%(ext)s")
+
+    _, ext = os.path.splitext(out)
+    return out if ext else f"{out}.%(ext)s"
+
+
+def _apply_format(config, opts):
+    """Set the format selector based on download-mode flags."""
+    fmt = config.get("quality")
+    if config.get("audio_only"):
+        fmt = "bestaudio/best"
+    elif config.get("video_only") or config.get("video_and_captions_only"):
+        fmt = "bestvideo/best"
+    if fmt:
+        opts["format"] = fmt
+
+
+def _apply_captions(config, opts):
+    """Enable subtitle options when requested."""
+    if config.get("captions") or config.get("video_and_captions_only"):
+        opts["writesubtitles"] = True
+        opts["allsubtitles"] = True
+    if config.get("captions_only"):
+        opts["writesubtitles"] = True
+        opts["allsubtitles"] = True
+        opts["skip_download"] = True
+
+
+def _apply_thumbnails(config, opts):
+    """Enable thumbnail options when requested."""
+    if config.get("thumbnail"):
+        opts["writethumbnail"] = True
+    if config.get("thumbnail_only"):
+        opts["writethumbnail"] = True
+        opts["skip_download"] = True
+
+
+def build_ydl_opts(config, title, output_path_override=None):
+    """Build the yt-dlp options dict from the merged config and per-URL info."""
+    outtmpl = _resolve_outtmpl(config, title, output_path_override)
+
+    opts = {
+        "outtmpl": outtmpl,
+        "quiet": False,
+    }
+
+    _apply_format(config, opts)
+    _apply_captions(config, opts)
+    _apply_thumbnails(config, opts)
+
+    # Transcoding (post-processor)
+    transcode = config.get("transcode")
+    if transcode:
+        opts["postprocessors"] = [
+            {"key": "FFmpegVideoConvertor", "preferedformat": transcode}
+        ]
+
+    # Referrer
+    referrer = config.get("referrer")
+    if referrer:
+        opts.setdefault("http_headers", {})["Referer"] = referrer
+
+    # Cookies
+    cookies = config.get("cookies")
+    if cookies:
+        opts["cookiefile"] = cookies
+
+    return opts, outtmpl
+
+
+# ---------------------------------------------------------------------------
+# Core logic
+# ---------------------------------------------------------------------------
+def extract_m3u8(driver, url):
+    """Use Selenium to load a page and extract the m3u8 URL."""
+    driver.get(url)
+    time.sleep(5)
+
+    page_title = driver.title.strip()
+    page_source = driver.page_source
+
+    m3u8_url = None
+    m3u8_pattern = r'(https?://[^\s"]+\.m3u8)'
+    match = re.search(m3u8_pattern, page_source)
+    if match:
+        m3u8_url = match.group(0)
+
+    # Fix incomplete URLs
+    if not m3u8_url or m3u8_url.startswith("t:"):
+        print("Fixing the m3u8 URL...")
+        m3u8_url = urljoin(url, m3u8_url)
+        if m3u8_url.startswith("t:"):
+            m3u8_url = url + m3u8_url[2:]
+
+    return m3u8_url, page_title
+
+
+def fetch_m3u8_and_download(url, config, output_path_override=None):
+    """Extract the m3u8 URL from a page and download with yt-dlp."""
     chrome_options = Options()
-    chrome_options.add_argument(
-        "--headless"
-    )  # Run in headless mode (without opening a browser window)
-
-    # Setup WebDriver (make sure ChromeDriver is in your PATH)
+    chrome_options.add_argument("--headless")
     driver = webdriver.Chrome(options=chrome_options)
 
     try:
-        # Open the URL with the WebDriver
-        driver.get(url)
-
-        # Allow the page to load and execute any JS
-        time.sleep(5)  # Adjust time if necessary depending on page complexity
-
-        # Get the page title
-        page_title = driver.title.strip()
-
-        # Fetch the page source and extract the m3u8 URL (using regex)
-        page_source = driver.page_source
-
-        # Regular expression to find m3u8 URLs
-        m3u8_url = None
-        m3u8_pattern = r'(https?://[^\s"]+\.m3u8)'
-        match = re.search(m3u8_pattern, page_source)
-
-        if match:
-            m3u8_url = match.group(0)
-
-        # If the URL isn't found or it's incomplete (starts with "t:")
-        if not m3u8_url or m3u8_url.startswith("t:"):
-            print("Fixing the m3u8 URL...")
-
-            # Ensure we prepend the base URL if the extracted m3u8 URL is relative
-            base_url = url  # Use the page URL as the base for relative URLs
-            m3u8_url = urljoin(
-                base_url, m3u8_url
-            )  # Join the base URL and the relative m3u8 URL
-
-            # If the URL still starts with "t:", prepend the source base URL
-            if m3u8_url.startswith("t:"):
-                m3u8_url = (
-                    url + m3u8_url[2:]
-                )
+        m3u8_url, page_title = extract_m3u8(driver, url)
 
         if not m3u8_url:
             print("m3u8 URL not found in the page source.")
             return
 
-        # Close the WebDriver
         driver.quit()
 
-        # Download the video using yt-dlp
-        if m3u8_url:
-            print(f"Found m3u8 URL: {m3u8_url}")
+        # If use_base_url_as_referrer, set referrer from the page URL
+        effective_config = dict(config)
+        if effective_config.get("use_base_url_as_referrer") and not effective_config.get("referrer"):
+            parsed = urlparse(url)
+            effective_config["referrer"] = f"{parsed.scheme}://{parsed.netloc}/"
 
-            # Determine output template from output_path or fall back to page title
-            if output_path:
-                # If output_path is a directory (ends with / or exists as dir), use page title inside it
-                if output_path.endswith(os.sep) or os.path.isdir(output_path):
-                    outtmpl = os.path.join(output_path, f"{page_title}.%(ext)s")
-                else:
-                    # Treat as a full filename (or path + filename)
-                    # If it already has an extension, use as-is; otherwise append .%(ext)s
-                    _, ext = os.path.splitext(output_path)
-                    if ext:
-                        outtmpl = output_path
-                    else:
-                        outtmpl = f"{output_path}.%(ext)s"
-            else:
-                outtmpl = f"{page_title}.%(ext)s"
+        print(f"Found m3u8 URL: {m3u8_url}")
 
-            print(f"Downloading to {outtmpl}...")
+        ydl_opts, outtmpl = build_ydl_opts(effective_config, page_title, output_path_override)
+        print(f"Downloading to {outtmpl}...")
 
-            ydl_opts = {
-                "outtmpl": outtmpl,
-                "quiet": False,
-            }
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([m3u8_url])
+        print(f"Download completed: {outtmpl}")
 
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                ydl.download([m3u8_url])
-            print(f"Download completed: {outtmpl}")
-        else:
-            print("No valid m3u8 URL found.")
     except Exception as e:
         print(f"An error occurred: {e}")
     finally:
-        driver.quit()
+        try:
+            driver.quit()
+        except Exception:
+            pass
 
 
-def download_from_file(file_path):
+def download_from_file(file_path, config):
+    """Read URLs from a file and download each one."""
     try:
-        with open(file_path, "r") as file:
-            urls = file.readlines()
+        with open(file_path, "r") as f:
+            lines = f.readlines()
 
-        # Parse lines: each line is "URL" or "URL custom_title_or_path"
         entries = []
-        for line in urls:
+        for line in lines:
             line = line.strip()
-            if not line:
+            if not line or line.startswith("#"):
                 continue
-            parts = line.split(None, 1)  # Split on first whitespace
+            parts = line.split(None, 1)
             url = parts[0]
             output_path = parts[1] if len(parts) > 1 else None
             entries.append((url, output_path))
@@ -120,7 +363,7 @@ def download_from_file(file_path):
             return
 
         for url, output_path in entries:
-            fetch_m3u8_and_download(url, output_path)
+            fetch_m3u8_and_download(url, config, output_path)
 
     except FileNotFoundError:
         print(f"Error: File '{file_path}' not found.")
@@ -128,7 +371,24 @@ def download_from_file(file_path):
         print(f"An error occurred while reading the file: {e}")
 
 
-# Path to the file containing URLs (one per line)
-file_path = "urls.txt"
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+def main():
+    parser = build_arg_parser()
+    args = parser.parse_args()
 
-download_from_file(file_path)
+    # Load configs in priority order
+    toml_path = args.config or "config.toml"
+    toml_cfg = load_toml_config(toml_path)
+    env_cfg = load_env_config()
+    cli_cfg = load_cli_config(args)
+
+    config = merge_config(cli_cfg, env_cfg, toml_cfg)
+
+    urls_file = config["urls_file"]
+    download_from_file(urls_file, config)
+
+
+if __name__ == "__main__":
+    main()

@@ -136,6 +136,8 @@ DEFAULTS = {
     "proxy": None,                # proxy for yt-dlp downloads (e.g. socks5://127.0.0.1:1080)
     "browser_proxy": None,        # proxy for the Selenium browser
     "ignore_ssl_errors": False,   # ignore SSL certificate errors
+    "extractor": "auto",            # "auto", "ytdlp", or "m3u8"
+    "extractors": None,             # comma-separated allowlist of yt-dlp extractors
     # Download-mode flags (all False = default yt-dlp behaviour)
     "thumbnail": False,          # download thumbnail alongside video
     "thumbnail_only": False,
@@ -167,6 +169,8 @@ ENV_MAP = {
     "proxy":                     "M3U8_PROXY",
     "browser_proxy":             "M3U8_BROWSER_PROXY",
     "ignore_ssl_errors":         "M3U8_IGNORE_SSL_ERRORS",
+    "extractor":                 "M3U8_EXTRACTOR",
+    "extractors":                "M3U8_EXTRACTORS",
     "thumbnail":                "M3U8_THUMBNAIL",
     "thumbnail_only":           "M3U8_THUMBNAIL_ONLY",
     "captions":                 "M3U8_CAPTIONS",
@@ -293,6 +297,16 @@ def build_arg_parser():
     p.add_argument("--ignore-ssl-errors", action="store_true", default=None,
                    help="Ignore SSL certificate errors in both the browser and yt-dlp")
 
+    # Extractor selection
+    ext = p.add_argument_group("extractor")
+    ext.add_argument("--extractor",
+                     help="Extraction strategy: 'auto' (default, try yt-dlp native first "
+                          "then fall back to m3u8), 'ytdlp' (yt-dlp only), "
+                          "or 'm3u8' (Selenium m3u8 only)")
+    ext.add_argument("--extractors",
+                     help="Comma-separated allowlist of yt-dlp extractor names "
+                          "(e.g. 'youtube,vimeo'). Only used with 'auto' or 'ytdlp' mode")
+
     # Download-mode flags
     mode = p.add_argument_group("download mode")
     mode.add_argument("--thumbnail", action="store_true", default=None,
@@ -346,6 +360,8 @@ def load_cli_config(args_ns):
         "proxy": args_ns.proxy,
         "browser_proxy": args_ns.browser_proxy,
         "ignore_ssl_errors": args_ns.ignore_ssl_errors,
+        "extractor": args_ns.extractor,
+        "extractors": args_ns.extractors,
         "thumbnail": args_ns.thumbnail,
         "thumbnail_only": args_ns.thumbnail_only,
         "captions": args_ns.captions,
@@ -391,6 +407,8 @@ def _build_per_url_parser():
     p.add_argument("--proxy")
     p.add_argument("--browser-proxy")
     p.add_argument("--ignore-ssl-errors", action="store_true", default=None)
+    p.add_argument("--extractor")
+    p.add_argument("--extractors")
     p.add_argument("--thumbnail", action="store_true", default=None)
     p.add_argument("--thumbnail-only", action="store_true", default=None)
     p.add_argument("--captions", action="store_true", default=None)
@@ -755,6 +773,84 @@ def _download_m3u8(m3u8_url, effective_config, page_title, output_path_override)
         log.success(f"Completed: {outtmpl}")
 
 
+def _try_ytdlp_direct(url, effective_config, output_path_override=None):
+    """Try downloading with yt-dlp's native extractors (no Selenium).
+
+    Returns True on success, False if yt-dlp can't handle the URL.
+    """
+    extractors_csv = effective_config.get("extractors")
+    allowed = (
+        [e.strip() for e in extractors_csv.split(",") if e.strip()]
+        if extractors_csv else []
+    )
+
+    info = _probe_ytdlp(url, effective_config, allowed)
+    if not info:
+        return False
+
+    title = info.get("title", "video")
+    extractor_name = info.get("extractor", "unknown")
+    log.info(f"yt-dlp native extractor matched: {extractor_name}")
+
+    return _run_ytdlp_direct(url, effective_config, title, allowed, output_path_override)
+
+
+def _probe_ytdlp(url, config, allowed):
+    """Probe a URL with yt-dlp to see if a native extractor can handle it."""
+    opts = {"quiet": True, "no_warnings": True}
+    if allowed:
+        opts["allowed_extractors"] = allowed
+    if config.get("proxy"):
+        opts["proxy"] = config["proxy"]
+    if config.get("ignore_ssl_errors"):
+        opts["nocheckcertificate"] = True
+    if config.get("cookies"):
+        opts["cookiefile"] = config["cookies"]
+
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            return ydl.extract_info(url, download=False)
+    except Exception:
+        return None
+
+
+def _run_ytdlp_direct(url, effective_config, title, allowed, output_path_override):
+    """Run yt-dlp natively on a URL (after a successful probe)."""
+    use_system = effective_config.get("use_system_ytdlp") or effective_config.get("yt_dlp_path")
+
+    if use_system:
+        cmd, outtmpl = _build_system_ytdlp_cmd(
+            effective_config, url, title, output_path_override
+        )
+        for ext_name in allowed:
+            cmd.insert(-1, "--ies")
+            cmd.insert(-1, ext_name)
+
+        log.step(f"Downloading {outtmpl} (system yt-dlp, native extractor)")
+        result = subprocess.run(cmd, check=False)
+        if result.returncode == 0:
+            log.success(f"Completed: {outtmpl}")
+            return True
+        log.error(f"yt-dlp exited with code {result.returncode}")
+        return False
+
+    ydl_opts, outtmpl = build_ydl_opts(
+        effective_config, title, output_path_override
+    )
+    if allowed:
+        ydl_opts["allowed_extractors"] = allowed
+
+    log.step(f"Downloading {outtmpl} (yt-dlp native extractor)")
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([url])
+        log.success(f"Completed: {outtmpl}")
+        return True
+    except Exception as e:
+        log.warn(f"yt-dlp native download failed: {e}")
+        return False
+
+
 def fetch_m3u8_and_download(url, config, output_path_override=None, per_url_overrides=None):
     """Extract the m3u8 URL from a page and download with yt-dlp."""
     # Merge per-URL overrides on top of the global config
@@ -766,6 +862,25 @@ def fetch_m3u8_and_download(url, config, output_path_override=None, per_url_over
     if output_path_override is None:
         output_path_override = effective_config.pop("output_path", None)
 
+    # If use_base_url_as_referrer, set referrer from the page URL
+    if effective_config.get("use_base_url_as_referrer") and not effective_config.get("referrer"):
+        parsed = urlparse(url)
+        effective_config["referrer"] = f"{parsed.scheme}://{parsed.netloc}/"
+
+    mode = str(effective_config.get("extractor", "auto")).strip().lower()
+
+    # --- yt-dlp native extraction ("auto" or "ytdlp") ---
+    if mode in ("auto", "ytdlp"):
+        log.step(f"Trying yt-dlp native extraction for {url}")
+        success = _try_ytdlp_direct(url, effective_config, output_path_override)
+        if success:
+            return
+        if mode == "ytdlp":
+            log.error(f"yt-dlp could not extract from {url} (extractor mode: ytdlp)")
+            return
+        log.info("Falling back to Selenium m3u8 extraction...")
+
+    # --- Selenium m3u8 extraction ("auto" fallback or "m3u8") ---
     chrome_options = _build_chrome_options(effective_config)
     driver = webdriver.Chrome(options=chrome_options)
 
@@ -777,11 +892,6 @@ def fetch_m3u8_and_download(url, config, output_path_override=None, per_url_over
             return
 
         driver.quit()
-
-        # If use_base_url_as_referrer, set referrer from the page URL
-        if effective_config.get("use_base_url_as_referrer") and not effective_config.get("referrer"):
-            parsed = urlparse(url)
-            effective_config["referrer"] = f"{parsed.scheme}://{parsed.netloc}/"
 
         selected = _select_m3u8_urls(m3u8_urls, effective_config, url)
 

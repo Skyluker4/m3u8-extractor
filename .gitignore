@@ -1,5 +1,6 @@
 .venv
 venv
+.env
 urls.txt
 config.toml
 *.mp4

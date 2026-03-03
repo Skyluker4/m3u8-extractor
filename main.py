@@ -70,6 +70,8 @@ DEFAULTS = {
     "parallel": "all",           # "all", number, "cores", "logical_cores"
     "m3u8_select": "first",       # "first", "last", or "all"
     "m3u8_filter": None,          # regex pattern to filter m3u8 URLs
+    "adblock": False,             # load an adblocker extension in Chrome
+    "adblock_extension": None,    # path to a custom .crx adblocker extension
     # Download-mode flags (all False = default yt-dlp behaviour)
     "thumbnail": False,          # download thumbnail alongside video
     "thumbnail_only": False,
@@ -96,6 +98,8 @@ ENV_MAP = {
     "parallel":                  "M3U8_PARALLEL",
     "m3u8_select":               "M3U8_SELECT",
     "m3u8_filter":               "M3U8_FILTER",
+    "adblock":                   "M3U8_ADBLOCK",
+    "adblock_extension":         "M3U8_ADBLOCK_EXTENSION",
     "thumbnail":                "M3U8_THUMBNAIL",
     "thumbnail_only":           "M3U8_THUMBNAIL_ONLY",
     "captions":                 "M3U8_CAPTIONS",
@@ -106,7 +110,7 @@ ENV_MAP = {
 }
 
 BOOL_KEYS = {
-    "use_base_url_as_referrer", "use_system_ytdlp",
+    "use_base_url_as_referrer", "use_system_ytdlp", "adblock",
     "thumbnail", "thumbnail_only",
     "captions", "captions_only", "audio_only", "video_only",
     "video_and_captions_only",
@@ -200,6 +204,14 @@ def build_arg_parser():
     m3u8.add_argument("--m3u8-filter",
                       help="Regex pattern to filter m3u8 URLs (applied before selection)")
 
+    # Adblock
+    adb = p.add_argument_group("adblock")
+    adb.add_argument("--adblock", action="store_true", default=None,
+                     help="Load an adblocker extension in Chrome "
+                          "(uses bundled uBlock Origin Lite by default)")
+    adb.add_argument("--adblock-extension",
+                     help="Path to a custom .crx adblocker extension file")
+
     # Download-mode flags
     mode = p.add_argument_group("download mode")
     mode.add_argument("--thumbnail", action="store_true", default=None,
@@ -242,6 +254,8 @@ def load_cli_config(args_ns):
         "parallel": args_ns.parallel,
         "m3u8_select": args_ns.m3u8_select,
         "m3u8_filter": args_ns.m3u8_filter,
+        "adblock": args_ns.adblock,
+        "adblock_extension": args_ns.adblock_extension,
         "thumbnail": args_ns.thumbnail,
         "thumbnail_only": args_ns.thumbnail_only,
         "captions": args_ns.captions,
@@ -282,6 +296,8 @@ def _build_per_url_parser():
     p.add_argument("-p", "--parallel")
     p.add_argument("--m3u8-select")
     p.add_argument("--m3u8-filter")
+    p.add_argument("--adblock", action="store_true", default=None)
+    p.add_argument("--adblock-extension")
     p.add_argument("--thumbnail", action="store_true", default=None)
     p.add_argument("--thumbnail-only", action="store_true", default=None)
     p.add_argument("--captions", action="store_true", default=None)
@@ -454,6 +470,68 @@ def _build_system_ytdlp_cmd(config, m3u8_url, title, output_path_override=None):
 
 
 # ---------------------------------------------------------------------------
+# Adblock helpers
+# ---------------------------------------------------------------------------
+DEFAULT_ADBLOCK_URL = (
+    "https://clients2.google.com/service/update2/crx?"
+    "response=redirect&prodversion=126.0&acceptformat=crx2,crx3"
+    "&x=id%3Dddkjiahejlhfcafbddmgiahcphecmpfh%26uc"  # uBlock Origin Lite
+)
+
+
+def _get_adblock_extension(config):
+    """Return the path to the adblock .crx file, downloading if needed."""
+    custom = config.get("adblock_extension")
+    if custom:
+        if os.path.isfile(custom):
+            return custom
+        print(f"WARNING: adblock extension not found at '{custom}'")
+        return None
+
+    # Look in default config dir, then CWD
+    crx_name = "ublock-origin-lite.crx"
+    for candidate in [
+        os.path.join(_default_config_dir(), crx_name),
+        crx_name,
+    ]:
+        if os.path.isfile(candidate):
+            return candidate
+
+    # Download it
+    cache_dir = _default_config_dir()
+    os.makedirs(cache_dir, exist_ok=True)
+    dest = os.path.join(cache_dir, crx_name)
+    print("Downloading uBlock Origin Lite extension...")
+    try:
+        import urllib.request
+        urllib.request.urlretrieve(DEFAULT_ADBLOCK_URL, dest)
+        print(f"  Saved to {dest}")
+        return dest
+    except Exception as e:
+        print(f"  WARNING: failed to download adblocker: {e}")
+        return None
+
+
+def _build_chrome_options(config):
+    """Build Chrome options, optionally loading an adblocker extension."""
+    chrome_options = Options()
+
+    use_adblock = config.get("adblock") or config.get("adblock_extension")
+    if use_adblock:
+        crx_path = _get_adblock_extension(config)
+        if crx_path:
+            # New headless mode (Chrome 112+) is required for extensions
+            chrome_options.add_argument("--headless=new")
+            chrome_options.add_extension(crx_path)
+            print(f"  Loaded adblocker: {crx_path}")
+            return chrome_options
+        print("  Continuing without adblock.")
+
+    chrome_options.add_argument("--headless")
+    return chrome_options
+
+
+# ---------------------------------------------------------------------------
 # Core logic
 # ---------------------------------------------------------------------------
 def extract_m3u8(driver, url):
@@ -562,8 +640,7 @@ def fetch_m3u8_and_download(url, config, output_path_override=None, per_url_over
     if output_path_override is None:
         output_path_override = effective_config.pop("output_path", None)
 
-    chrome_options = Options()
-    chrome_options.add_argument("--headless")
+    chrome_options = _build_chrome_options(effective_config)
     driver = webdriver.Chrome(options=chrome_options)
 
     try:

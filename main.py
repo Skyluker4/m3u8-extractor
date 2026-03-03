@@ -781,9 +781,15 @@ def _apply_adblock_strictness(driver, config):
 # ---------------------------------------------------------------------------
 # Core logic
 # ---------------------------------------------------------------------------
-def _extract_m3u8_from_network_logs(driver):
-    """Extract m3u8 URLs from Chrome's performance (network) logs."""
-    urls = []
+_VIDEO_EXTENSIONS = (
+    ".mp4", ".webm", ".mkv", ".avi", ".flv", ".ts", ".mov", ".wmv", ".mpd",
+)
+
+
+def _extract_urls_from_network_logs(driver):
+    """Extract m3u8 and direct video URLs from Chrome's performance logs."""
+    m3u8_urls = []
+    video_urls = []
     try:
         logs = driver.get_log("performance")
         for entry in logs:
@@ -798,19 +804,27 @@ def _extract_m3u8_from_network_logs(driver):
                     req_url = msg["params"].get("request", {}).get("url", "")
                 elif method == "Network.responseReceived":
                     req_url = msg["params"].get("response", {}).get("url", "")
-                if ".m3u8" in req_url:
-                    urls.append(req_url)
+                if not req_url:
+                    continue
+                # Strip query string for extension check
+                path = req_url.split("?")[0].split("#")[0]
+                if ".m3u8" in path:
+                    m3u8_urls.append(req_url)
+                elif any(path.endswith(ext) or (ext + "/") in path
+                         for ext in _VIDEO_EXTENSIONS):
+                    video_urls.append(req_url)
             except (KeyError, json.JSONDecodeError):
                 continue
     except Exception as e:
         log.detail(f"Could not read network logs: {e}")
-    return urls
+    return m3u8_urls, video_urls
 
 
 def extract_m3u8(driver, url):
-    """Use Selenium to load a page and extract all m3u8 URLs.
+    """Use Selenium to load a page and extract m3u8 and direct video URLs.
 
     Searches both the rendered page source and intercepted network requests.
+    Returns (m3u8_urls, video_urls, page_title).
     """
     driver.get(url)
     time.sleep(5)
@@ -818,32 +832,37 @@ def extract_m3u8(driver, url):
     page_title = driver.title.strip()
     page_source = driver.page_source
 
-    # Pattern matches m3u8 URLs with optional query strings / fragments
+    # --- m3u8 URLs ---
     m3u8_pattern = r'(https?://[^\s"\'>]+\.m3u8(?:[?#][^\s"\'>]*)?)'
-    matches = re.findall(m3u8_pattern, page_source)
+    m3u8_matches = re.findall(m3u8_pattern, page_source)
 
-    # Also check network logs for m3u8 requests made via XHR/fetch
-    network_urls = _extract_m3u8_from_network_logs(driver)
-    matches.extend(network_urls)
+    # --- Direct video URLs (mp4, webm, etc.) ---
+    exts = "|".join(re.escape(e) for e in _VIDEO_EXTENSIONS)
+    video_pattern = r'(https?://[^\s"\'>]+(?:' + exts + r')(?:/[^\s"\'>]*)?(?:\?[^\s"\'>]*)?)'
+    video_matches = re.findall(video_pattern, page_source)
 
-    # Deduplicate while preserving order
-    seen = set()
-    unique = []
-    for m in matches:
-        if m not in seen:
-            seen.add(m)
-            unique.append(m)
+    # Also check network logs
+    net_m3u8, net_video = _extract_urls_from_network_logs(driver)
+    m3u8_matches.extend(net_m3u8)
+    video_matches.extend(net_video)
 
-    # Fix incomplete URLs
-    fixed = []
-    for m3u8_url in unique:
-        if m3u8_url.startswith("t:"):
-            m3u8_url = urljoin(url, m3u8_url)
-            if m3u8_url.startswith("t:"):
-                m3u8_url = url + m3u8_url[2:]
-        fixed.append(m3u8_url)
+    def _dedup_and_fix(urls):
+        seen = set()
+        unique = []
+        for u in urls:
+            if u not in seen:
+                seen.add(u)
+                unique.append(u)
+        fixed = []
+        for u in unique:
+            if u.startswith("t:"):
+                u = urljoin(url, u)
+                if u.startswith("t:"):
+                    u = url + u[2:]
+            fixed.append(u)
+        return fixed
 
-    return fixed, page_title
+    return _dedup_and_fix(m3u8_matches), _dedup_and_fix(video_matches), page_title
 
 
 def _select_m3u8_urls(m3u8_urls, config, page_url):
@@ -1034,19 +1053,25 @@ def fetch_m3u8_and_download(url, config, output_path_override=None, per_url_over
     _apply_adblock_strictness(driver, effective_config)
 
     try:
-        m3u8_urls, page_title = extract_m3u8(driver, url)
+        m3u8_urls, video_urls, page_title = extract_m3u8(driver, url)
 
-        if not m3u8_urls:
-            log.warn(f"No m3u8 URL found on {url}")
+        if not m3u8_urls and not video_urls:
+            log.warn(f"No m3u8 or video URL found on {url}")
             return
 
         driver.quit()
 
-        selected = _select_m3u8_urls(m3u8_urls, effective_config, url)
-
-        for m3u8_url in selected:
-            log.info(f"Found m3u8: {m3u8_url}")
-            _download_m3u8(m3u8_url, effective_config, page_title, output_path_override)
+        if m3u8_urls:
+            selected = _select_m3u8_urls(m3u8_urls, effective_config, url)
+            for m3u8_url in selected:
+                log.info(f"Found m3u8: {m3u8_url}")
+                _download_m3u8(m3u8_url, effective_config, page_title, output_path_override)
+        else:
+            log.info(f"No m3u8 found, but found {len(video_urls)} direct video URL(s)")
+            selected = _select_m3u8_urls(video_urls, effective_config, url)
+            for vid_url in selected:
+                log.info(f"Found video: {vid_url}")
+                _download_m3u8(vid_url, effective_config, page_title, output_path_override)
 
     except Exception as e:
         log.error(f"An error occurred: {e}")

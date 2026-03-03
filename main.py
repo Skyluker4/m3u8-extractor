@@ -68,6 +68,8 @@ DEFAULTS = {
     "yt_dlp_path": None,         # custom path to yt-dlp binary
     "use_system_ytdlp": False,   # use system yt-dlp instead of Python library
     "parallel": "all",           # "all", number, "cores", "logical_cores"
+    "m3u8_select": "first",       # "first", "last", or "all"
+    "m3u8_filter": None,          # regex pattern to filter m3u8 URLs
     # Download-mode flags (all False = default yt-dlp behaviour)
     "thumbnail": False,          # download thumbnail alongside video
     "thumbnail_only": False,
@@ -92,6 +94,8 @@ ENV_MAP = {
     "yt_dlp_path":              "M3U8_YT_DLP_PATH",
     "use_system_ytdlp":         "M3U8_USE_SYSTEM_YTDLP",
     "parallel":                  "M3U8_PARALLEL",
+    "m3u8_select":               "M3U8_SELECT",
+    "m3u8_filter":               "M3U8_FILTER",
     "thumbnail":                "M3U8_THUMBNAIL",
     "thumbnail_only":           "M3U8_THUMBNAIL_ONLY",
     "captions":                 "M3U8_CAPTIONS",
@@ -188,6 +192,14 @@ def build_arg_parser():
                      help="Number of parallel downloads: a number, 'all' (default), "
                           "'cores' (physical CPU cores), or 'logical_cores'")
 
+    # m3u8 selection
+    m3u8 = p.add_argument_group("m3u8 selection")
+    m3u8.add_argument("--m3u8-select",
+                      help="Which m3u8 to download when multiple are found: "
+                           "'first' (default), 'last', or 'all'")
+    m3u8.add_argument("--m3u8-filter",
+                      help="Regex pattern to filter m3u8 URLs (applied before selection)")
+
     # Download-mode flags
     mode = p.add_argument_group("download mode")
     mode.add_argument("--thumbnail", action="store_true", default=None,
@@ -228,6 +240,8 @@ def load_cli_config(args_ns):
         "yt_dlp_path": args_ns.yt_dlp_path,
         "use_system_ytdlp": args_ns.use_system_ytdlp,
         "parallel": args_ns.parallel,
+        "m3u8_select": args_ns.m3u8_select,
+        "m3u8_filter": args_ns.m3u8_filter,
         "thumbnail": args_ns.thumbnail,
         "thumbnail_only": args_ns.thumbnail_only,
         "captions": args_ns.captions,
@@ -266,6 +280,8 @@ def _build_per_url_parser():
     p.add_argument("--use-system-ytdlp", action="store_true", default=None)
     p.add_argument("--yt-dlp-path")
     p.add_argument("-p", "--parallel")
+    p.add_argument("--m3u8-select")
+    p.add_argument("--m3u8-filter")
     p.add_argument("--thumbnail", action="store_true", default=None)
     p.add_argument("--thumbnail-only", action="store_true", default=None)
     p.add_argument("--captions", action="store_true", default=None)
@@ -441,27 +457,98 @@ def _build_system_ytdlp_cmd(config, m3u8_url, title, output_path_override=None):
 # Core logic
 # ---------------------------------------------------------------------------
 def extract_m3u8(driver, url):
-    """Use Selenium to load a page and extract the m3u8 URL."""
+    """Use Selenium to load a page and extract all m3u8 URLs."""
     driver.get(url)
     time.sleep(5)
 
     page_title = driver.title.strip()
     page_source = driver.page_source
 
-    m3u8_url = None
     m3u8_pattern = r'(https?://[^\s"]+\.m3u8)'
-    match = re.search(m3u8_pattern, page_source)
-    if match:
-        m3u8_url = match.group(0)
+    matches = re.findall(m3u8_pattern, page_source)
+
+    # Deduplicate while preserving order
+    seen = set()
+    unique = []
+    for m in matches:
+        if m not in seen:
+            seen.add(m)
+            unique.append(m)
 
     # Fix incomplete URLs
-    if not m3u8_url or m3u8_url.startswith("t:"):
-        print("Fixing the m3u8 URL...")
-        m3u8_url = urljoin(url, m3u8_url)
+    fixed = []
+    for m3u8_url in unique:
         if m3u8_url.startswith("t:"):
-            m3u8_url = url + m3u8_url[2:]
+            m3u8_url = urljoin(url, m3u8_url)
+            if m3u8_url.startswith("t:"):
+                m3u8_url = url + m3u8_url[2:]
+        fixed.append(m3u8_url)
 
-    return m3u8_url, page_title
+    return fixed, page_title
+
+
+def _select_m3u8_urls(m3u8_urls, config, page_url):
+    """Filter and select m3u8 URLs according to config."""
+    urls = list(m3u8_urls)
+
+    # Apply regex filter if set
+    pattern = config.get("m3u8_filter")
+    if pattern:
+        try:
+            compiled = re.compile(pattern)
+            filtered = [u for u in urls if compiled.search(u)]
+            if filtered:
+                dropped = len(urls) - len(filtered)
+                if dropped:
+                    print(f"  m3u8 filter '{pattern}' matched {len(filtered)}/{len(urls)} URLs")
+                urls = filtered
+            else:
+                print(f"  WARNING: m3u8 filter '{pattern}' matched nothing, using all {len(urls)} URLs")
+        except re.error as e:
+            print(f"  WARNING: invalid m3u8 filter regex '{pattern}': {e}")
+
+    if len(urls) > 1:
+        print(f"  WARNING: {len(urls)} m3u8 URLs found on {page_url}:")
+        for i, u in enumerate(urls, 1):
+            print(f"    [{i}] {u}")
+
+    mode = str(config.get("m3u8_select", "first")).strip().lower()
+    if mode == "all":
+        print(f"  Downloading all {len(urls)} m3u8 URLs.")
+        return urls
+    if mode == "last":
+        chosen = urls[-1]
+        if len(urls) > 1:
+            print(f"  Using last m3u8: {chosen}")
+        return [chosen]
+    # default: first
+    chosen = urls[0]
+    if len(urls) > 1:
+        print(f"  Using first m3u8: {chosen}")
+    return [chosen]
+
+
+def _download_m3u8(m3u8_url, effective_config, page_title, output_path_override):
+    """Download a single m3u8 URL using either the library or system yt-dlp."""
+    use_system = effective_config.get("use_system_ytdlp") or effective_config.get("yt_dlp_path")
+    if use_system:
+        cmd, outtmpl = _build_system_ytdlp_cmd(
+            effective_config, m3u8_url, page_title, output_path_override
+        )
+        print(f"Downloading to {outtmpl} (system yt-dlp)...")
+        result = subprocess.run(cmd, check=False)
+        if result.returncode == 0:
+            print(f"Download completed: {outtmpl}")
+        else:
+            print(f"yt-dlp exited with code {result.returncode}")
+    else:
+        ydl_opts, outtmpl = build_ydl_opts(
+            effective_config, page_title, output_path_override
+        )
+        print(f"Downloading to {outtmpl}...")
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([m3u8_url])
+        print(f"Download completed: {outtmpl}")
 
 
 def fetch_m3u8_and_download(url, config, output_path_override=None, per_url_overrides=None):
@@ -480,9 +567,9 @@ def fetch_m3u8_and_download(url, config, output_path_override=None, per_url_over
     driver = webdriver.Chrome(options=chrome_options)
 
     try:
-        m3u8_url, page_title = extract_m3u8(driver, url)
+        m3u8_urls, page_title = extract_m3u8(driver, url)
 
-        if not m3u8_url:
+        if not m3u8_urls:
             print("m3u8 URL not found in the page source.")
             return
 
@@ -493,28 +580,11 @@ def fetch_m3u8_and_download(url, config, output_path_override=None, per_url_over
             parsed = urlparse(url)
             effective_config["referrer"] = f"{parsed.scheme}://{parsed.netloc}/"
 
-        print(f"Found m3u8 URL: {m3u8_url}")
+        selected = _select_m3u8_urls(m3u8_urls, effective_config, url)
 
-        use_system = effective_config.get("use_system_ytdlp") or effective_config.get("yt_dlp_path")
-
-        if use_system:
-            cmd, outtmpl = _build_system_ytdlp_cmd(
-                effective_config, m3u8_url, page_title, output_path_override
-            )
-            print(f"Downloading to {outtmpl} (system yt-dlp)...")
-            result = subprocess.run(cmd, check=False)
-            if result.returncode == 0:
-                print(f"Download completed: {outtmpl}")
-            else:
-                print(f"yt-dlp exited with code {result.returncode}")
-        else:
-            ydl_opts, outtmpl = build_ydl_opts(
-                effective_config, page_title, output_path_override
-            )
-            print(f"Downloading to {outtmpl}...")
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                ydl.download([m3u8_url])
-            print(f"Download completed: {outtmpl}")
+        for m3u8_url in selected:
+            print(f"Found m3u8 URL: {m3u8_url}")
+            _download_m3u8(m3u8_url, effective_config, page_title, output_path_override)
 
     except Exception as e:
         print(f"An error occurred: {e}")

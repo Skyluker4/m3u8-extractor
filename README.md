@@ -100,12 +100,14 @@ If no URL is given and `--watch` is not set, URLs are read from a file (`urls.tx
 | ------------------ | ------------------------------------------------------------------------------------ |
 | `-p`, `--parallel` | Number of parallel downloads: a number, `all` (default), `cores`, or `logical_cores` |
 
-### m3u8 selection
+### Stream selection
 
-| Flag            | Description                                                         |
-| --------------- | ------------------------------------------------------------------- |
-| `--m3u8-select` | Which m3u8 when multiple found: `first` (default), `last`, or `all` |
-| `--m3u8-filter` | Regex pattern to filter m3u8 URLs before selection                  |
+| Flag              | Description                                                                   |
+| ----------------- | ----------------------------------------------------------------------------- |
+| `--stream-type`   | Which stream types to look for: `both` (default), `m3u8`, or `video`          |
+| `--m3u8-select`   | Which stream when multiple found: `first` (default), `last`, or `all`         |
+| `--m3u8-filter`   | Regex to filter m3u8 URLs before selection                                    |
+| `--video-filter`  | Regex to filter direct video URLs (mp4, webm, etc.) before selection          |
 
 ### Adblock
 

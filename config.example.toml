@@ -43,6 +43,8 @@
 
 # m3u8_select = "first"               # "first", "last", or "all"
 # m3u8_filter = ""                    # Regex to filter m3u8 URLs before selection
+# video_filter = ""                   # Regex to filter direct video URLs before selection
+# stream_type = "both"                # "both", "m3u8", or "video"
 
 # ── Adblock ──────────────────────────────────────────────────────────────────
 

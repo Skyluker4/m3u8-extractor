@@ -132,6 +132,8 @@ DEFAULTS = {
     "parallel": "all",           # "all", number, "cores", "logical_cores"
     "m3u8_select": "first",       # "first", "last", or "all"
     "m3u8_filter": None,          # regex pattern to filter m3u8 URLs
+    "video_filter": None,         # regex pattern to filter direct video URLs
+    "stream_type": "both",        # "both", "m3u8", or "video"
     "adblock": False,             # load an adblocker extension in Chrome
     "adblock_extension": None,    # path to a custom .crx adblocker extension
     "adblock_strictness": "complete",  # "basic", "optimal", or "complete"
@@ -166,6 +168,8 @@ ENV_MAP = {
     "parallel":                  "M3U8_PARALLEL",
     "m3u8_select":               "M3U8_SELECT",
     "m3u8_filter":               "M3U8_FILTER",
+    "video_filter":              "M3U8_VIDEO_FILTER",
+    "stream_type":               "M3U8_STREAM_TYPE",
     "adblock":                   "M3U8_ADBLOCK",
     "adblock_extension":         "M3U8_ADBLOCK_EXTENSION",
     "adblock_strictness":        "M3U8_ADBLOCK_STRICTNESS",
@@ -283,13 +287,18 @@ def build_arg_parser():
                      help="Number of parallel downloads: a number, 'all' (default), "
                           "'cores' (physical CPU cores), or 'logical_cores'")
 
-    # m3u8 selection
-    m3u8 = p.add_argument_group("m3u8 selection")
+    # m3u8 / video selection
+    m3u8 = p.add_argument_group("stream selection")
+    m3u8.add_argument("--stream-type",
+                      help="Which stream types to look for: "
+                           "'both' (default), 'm3u8' (only m3u8), or 'video' (only direct files)")
     m3u8.add_argument("--m3u8-select",
-                      help="Which m3u8 to download when multiple are found: "
+                      help="Which stream to download when multiple are found: "
                            "'first' (default), 'last', or 'all'")
     m3u8.add_argument("--m3u8-filter",
                       help="Regex pattern to filter m3u8 URLs (applied before selection)")
+    m3u8.add_argument("--video-filter",
+                      help="Regex pattern to filter direct video URLs (applied before selection)")
 
     # Adblock
     adb = p.add_argument_group("adblock")
@@ -373,6 +382,8 @@ def load_cli_config(args_ns):
         "parallel": args_ns.parallel,
         "m3u8_select": args_ns.m3u8_select,
         "m3u8_filter": args_ns.m3u8_filter,
+        "video_filter": args_ns.video_filter,
+        "stream_type": args_ns.stream_type,
         "adblock": args_ns.adblock,
         "adblock_strictness": args_ns.adblock_strictness,
         "adblock_extension": args_ns.adblock_extension,
@@ -421,6 +432,8 @@ def _build_per_url_parser():
     p.add_argument("-p", "--parallel")
     p.add_argument("--m3u8-select")
     p.add_argument("--m3u8-filter")
+    p.add_argument("--video-filter")
+    p.add_argument("--stream-type")
     p.add_argument("--adblock", action="store_true", default=None)
     p.add_argument("--adblock-strictness")
     p.add_argument("--adblock-extension")
@@ -865,45 +878,62 @@ def extract_m3u8(driver, url):
     return _dedup_and_fix(m3u8_matches), _dedup_and_fix(video_matches), page_title
 
 
-def _select_m3u8_urls(m3u8_urls, config, page_url):
-    """Filter and select m3u8 URLs according to config."""
-    urls = list(m3u8_urls)
+def _filter_urls(urls, pattern, label):
+    """Apply a regex filter to a list of URLs."""
+    if not pattern:
+        return urls
+    try:
+        compiled = re.compile(pattern)
+        filtered = [u for u in urls if compiled.search(u)]
+        if filtered:
+            dropped = len(urls) - len(filtered)
+            if dropped:
+                log.info(f"{label} filter '{pattern}' matched "
+                         f"{len(filtered)}/{len(urls)} URLs")
+            return filtered
+        log.warn(f"{label} filter '{pattern}' matched nothing — using all {len(urls)} URLs")
+        return urls
+    except re.error as e:
+        log.warn(f"Invalid {label.lower()} filter regex '{pattern}': {e}")
+        return urls
 
-    # Apply regex filter if set
-    pattern = config.get("m3u8_filter")
-    if pattern:
-        try:
-            compiled = re.compile(pattern)
-            filtered = [u for u in urls if compiled.search(u)]
-            if filtered:
-                dropped = len(urls) - len(filtered)
-                if dropped:
-                    log.info(f"Filter '{pattern}' matched {len(filtered)}/{len(urls)} URLs")
-                urls = filtered
-            else:
-                log.warn(f"Filter '{pattern}' matched nothing — using all {len(urls)} URLs")
-        except re.error as e:
-            log.warn(f"Invalid m3u8 filter regex '{pattern}': {e}")
+
+def _select_urls(urls, config, page_url, label="stream"):
+    """Select which URLs to download from a list."""
+    if not urls:
+        return []
 
     if len(urls) > 1:
-        log.warn(f"{len(urls)} m3u8 URLs found on {page_url}:")
+        log.warn(f"{len(urls)} {label} URLs found on {page_url}:")
         for i, u in enumerate(urls, 1):
             log.list_item(i, u)
 
     mode = str(config.get("m3u8_select", "first")).strip().lower()
     if mode == "all":
-        log.info(f"Downloading all {len(urls)} m3u8 URLs")
+        log.info(f"Downloading all {len(urls)} {label} URLs")
         return urls
     if mode == "last":
         chosen = urls[-1]
         if len(urls) > 1:
-            log.info(f"Selected last m3u8: {chosen}")
+            log.info(f"Selected last {label}: {chosen}")
         return [chosen]
     # default: first
     chosen = urls[0]
     if len(urls) > 1:
-        log.info(f"Selected first m3u8: {chosen}")
+        log.info(f"Selected first {label}: {chosen}")
     return [chosen]
+
+
+def _select_m3u8_urls(m3u8_urls, config, page_url):
+    """Filter and select m3u8 URLs according to config."""
+    urls = _filter_urls(list(m3u8_urls), config.get("m3u8_filter"), "m3u8")
+    return _select_urls(urls, config, page_url, "m3u8")
+
+
+def _select_video_urls(video_urls, config, page_url):
+    """Filter and select direct video URLs according to config."""
+    urls = _filter_urls(list(video_urls), config.get("video_filter"), "Video")
+    return _select_urls(urls, config, page_url, "video")
 
 
 def _download_m3u8(m3u8_url, effective_config, page_title, output_path_override):
@@ -1055,8 +1085,15 @@ def fetch_m3u8_and_download(url, config, output_path_override=None, per_url_over
     try:
         m3u8_urls, video_urls, page_title = extract_m3u8(driver, url)
 
+        # Apply stream_type preference
+        stype = str(effective_config.get("stream_type", "both")).strip().lower()
+        if stype == "m3u8":
+            video_urls = []
+        elif stype == "video":
+            m3u8_urls = []
+
         if not m3u8_urls and not video_urls:
-            log.warn(f"No m3u8 or video URL found on {url}")
+            log.warn(f"No matching stream URL found on {url}")
             return
 
         driver.quit()
@@ -1067,8 +1104,8 @@ def fetch_m3u8_and_download(url, config, output_path_override=None, per_url_over
                 log.info(f"Found m3u8: {m3u8_url}")
                 _download_m3u8(m3u8_url, effective_config, page_title, output_path_override)
         else:
-            log.info(f"No m3u8 found, but found {len(video_urls)} direct video URL(s)")
-            selected = _select_m3u8_urls(video_urls, effective_config, url)
+            log.info(f"Found {len(video_urls)} direct video URL(s)")
+            selected = _select_video_urls(video_urls, effective_config, url)
             for vid_url in selected:
                 log.info(f"Found video: {vid_url}")
                 _download_m3u8(vid_url, effective_config, page_title, output_path_override)

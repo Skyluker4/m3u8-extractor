@@ -1256,7 +1256,10 @@ def _run_ytdlp_direct(url, effective_config, title, allowed, output_path_overrid
 
 
 def fetch_m3u8_and_download(url, config, output_path_override=None, per_url_overrides=None):
-    """Extract the m3u8 URL from a page and download with yt-dlp."""
+    """Extract the m3u8 URL from a page and download with yt-dlp.
+
+    Returns (True, None) on success or (False, error_message) on failure.
+    """
     # Merge per-URL overrides on top of the global config
     effective_config = dict(config)
 
@@ -1289,10 +1292,11 @@ def fetch_m3u8_and_download(url, config, output_path_override=None, per_url_over
         log.step(f"Trying yt-dlp native extraction for {url}")
         success = _try_ytdlp_direct(url, effective_config, output_path_override)
         if success:
-            return
+            return True, None
         if mode == "ytdlp":
-            log.error(f"yt-dlp could not extract from {url} (extractor mode: ytdlp)")
-            return
+            msg = f"yt-dlp could not extract from {url} (extractor mode: ytdlp)"
+            log.error(msg)
+            return False, msg
         log.info("Falling back to Selenium m3u8 extraction...")
 
     # --- Selenium m3u8 extraction ("auto" fallback or "m3u8") ---
@@ -1314,8 +1318,9 @@ def fetch_m3u8_and_download(url, config, output_path_override=None, per_url_over
             m3u8_urls = []
 
         if not m3u8_urls and not video_urls:
-            log.warn(f"No matching stream URL found on {url}")
-            return
+            msg = f"No matching stream URL found on {url}"
+            log.warn(msg)
+            return False, msg
 
         driver.quit()
 
@@ -1331,8 +1336,12 @@ def fetch_m3u8_and_download(url, config, output_path_override=None, per_url_over
                 log.info(f"Found video: {vid_url}")
                 _download_m3u8(vid_url, effective_config, page_title, output_path_override)
 
+        return True, None
+
     except Exception as e:
-        log.error(f"An error occurred: {e}")
+        msg = str(e)
+        log.error(f"An error occurred: {msg}")
+        return False, msg
     finally:
         try:
             driver.quit()
@@ -1368,6 +1377,40 @@ def _resolve_worker_count(value, num_entries):
     except ValueError:
         log.warn(f"Unrecognised parallel value '{value}', defaulting to all")
         return num_entries
+
+
+def _format_duration(seconds):
+    """Format seconds into a human-readable duration string."""
+    if seconds < 60:
+        return f"{seconds:.1f}s"
+    minutes, secs = divmod(int(seconds), 60)
+    if minutes < 60:
+        return f"{minutes}m {secs}s"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}h {minutes}m {secs}s"
+
+
+def _print_summary(results, elapsed):
+    """Print a summary of download results.
+
+    results: list of (url, success: bool, error: str|None)
+    elapsed: total time in seconds
+    """
+    succeeded = [r for r in results if r[1]]
+    failed = [r for r in results if not r[1]]
+
+    log.header("Summary")
+    log.info(f"Total time: {_format_duration(elapsed)}")
+    log.success(f"{len(succeeded)} succeeded")
+
+    if failed:
+        log.error(f"{len(failed)} failed")
+        for url, _, error in failed:
+            reason = error or "unknown error"
+            log.detail(f"{url}")
+            log.detail(f"  └ {reason}")
+    else:
+        log.success("No failures")
 
 
 def download_from_file(file_path, config):
@@ -1421,10 +1464,18 @@ def download_from_file(file_path, config):
         log.header(f"Downloading {len(entries)} URL{'s' if len(entries) != 1 else ''} "
                    f"with {workers} worker{'s' if workers != 1 else ''}")
 
+        results = []
+        start_time = time.time()
+
         if workers <= 1 or len(entries) == 1:
             for i, (url, overrides) in enumerate(entries, 1):
                 log.step(f"[{i}/{len(entries)}] {url}")
-                fetch_m3u8_and_download(url, config, per_url_overrides=overrides)
+                try:
+                    ok, err = fetch_m3u8_and_download(url, config, per_url_overrides=overrides)
+                    results.append((url, ok, err))
+                except Exception as exc:
+                    log.error(f"Failed: {url} — {exc}")
+                    results.append((url, False, str(exc)))
         else:
             with ThreadPoolExecutor(max_workers=workers) as pool:
                 futures = {
@@ -1436,11 +1487,14 @@ def download_from_file(file_path, config):
                 for future in as_completed(futures):
                     src_url = futures[future]
                     try:
-                        future.result()
+                        ok, err = future.result()
+                        results.append((src_url, ok, err))
                     except Exception as exc:
                         log.error(f"Failed: {src_url} — {exc}")
+                        results.append((src_url, False, str(exc)))
 
-        log.header("All done!")
+        elapsed = time.time() - start_time
+        _print_summary(results, elapsed)
 
     except FileNotFoundError:
         log.error(f"File not found: '{file_path}'")
@@ -1504,7 +1558,9 @@ def watch_clipboard(config, interval=1.0):
             seen.add(url)
             log.info(f"Clipboard URL detected: {url}")
             try:
-                fetch_m3u8_and_download(url, config)
+                ok, err = fetch_m3u8_and_download(url, config)
+                if not ok:
+                    log.error(f"Failed: {url} — {err}")
             except Exception as exc:
                 log.error(f"Failed: {url} — {exc}")
 
@@ -1531,7 +1587,14 @@ def main():
         watch_clipboard(config, interval=args.watch_interval)
     elif args.url:
         # One-off download: use the URL directly
-        fetch_m3u8_and_download(args.url, config)
+        start_time = time.time()
+        try:
+            ok, err = fetch_m3u8_and_download(args.url, config)
+            results = [(args.url, ok, err)]
+        except Exception as exc:
+            results = [(args.url, False, str(exc))]
+        elapsed = time.time() - start_time
+        _print_summary(results, elapsed)
     else:
         # Batch download from file
         urls_file = _resolve_default_file(config["urls_file"])

@@ -137,6 +137,14 @@ If no URL is given and `--watch` is not set, URLs are read from a file (`urls.tx
 | --------------------- | --------------------------------------------------- |
 | `--ignore-ssl-errors` | Ignore SSL certificate errors in browser and yt-dlp |
 
+### localStorage
+
+| Flag                       | Description                                            |
+| -------------------------- | ------------------------------------------------------ |
+| `--localstorage KEY=VALUE` | Set a localStorage entry before page load (repeatable) |
+
+Example: `--localstorage "jwplayer.qualityLabel=HQ"` to force HQ quality on JWPlayer sites.
+
 ### Watch mode
 
 | Flag               | Description                                         |

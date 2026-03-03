@@ -140,6 +140,7 @@ DEFAULTS = {
     "proxy": None,                # proxy for yt-dlp downloads (e.g. socks5://127.0.0.1:1080)
     "browser_proxy": None,        # proxy for the Selenium browser
     "ignore_ssl_errors": False,   # ignore SSL certificate errors
+    "localstorage": None,           # localStorage key=value pairs to set before page load
     "extractor": "auto",            # "auto", "ytdlp", or "m3u8"
     "extractors": None,             # comma-separated allowlist of yt-dlp extractors
     # Download-mode flags (all False = default yt-dlp behaviour)
@@ -176,6 +177,7 @@ ENV_MAP = {
     "proxy":                     "M3U8_PROXY",
     "browser_proxy":             "M3U8_BROWSER_PROXY",
     "ignore_ssl_errors":         "M3U8_IGNORE_SSL_ERRORS",
+    "localstorage":              "M3U8_LOCALSTORAGE",
     "extractor":                 "M3U8_EXTRACTOR",
     "extractors":                "M3U8_EXTRACTORS",
     "thumbnail":                "M3U8_THUMBNAIL",
@@ -216,6 +218,11 @@ def load_toml_config(path="config.toml"):
 
     # Extract [[url_rules]] into a separate key before normalising
     url_rules = data.pop("url_rules", [])
+
+    # Extract [localstorage] table into the flat key
+    localstorage = data.pop("localstorage", None)
+    if isinstance(localstorage, dict) and localstorage:
+        data["localstorage"] = localstorage
 
     # Normalise bools
     for key in BOOL_KEYS:
@@ -324,6 +331,11 @@ def build_arg_parser():
     p.add_argument("--ignore-ssl-errors", action="store_true", default=None,
                    help="Ignore SSL certificate errors in both the browser and yt-dlp")
 
+    # localStorage
+    p.add_argument("--localstorage", action="append", metavar="KEY=VALUE",
+                   help="Set a localStorage entry before page load "
+                        "(repeatable, e.g. --localstorage 'jwplayer.qualityLabel=HQ')")
+
     # Extractor selection
     ext = p.add_argument_group("extractor")
     ext.add_argument("--extractor",
@@ -390,6 +402,7 @@ def load_cli_config(args_ns):
         "proxy": args_ns.proxy,
         "browser_proxy": args_ns.browser_proxy,
         "ignore_ssl_errors": args_ns.ignore_ssl_errors,
+        "localstorage": args_ns.localstorage,
         "extractor": args_ns.extractor,
         "extractors": args_ns.extractors,
         "thumbnail": args_ns.thumbnail,
@@ -440,6 +453,7 @@ def _build_per_url_parser():
     p.add_argument("--proxy")
     p.add_argument("--browser-proxy")
     p.add_argument("--ignore-ssl-errors", action="store_true", default=None)
+    p.add_argument("--localstorage", action="append")
     p.add_argument("--extractor")
     p.add_argument("--extractors")
     p.add_argument("--thumbnail", action="store_true", default=None)
@@ -791,6 +805,57 @@ def _apply_adblock_strictness(driver, config):
         log.warn(f"Could not set adblock strictness: {e}")
 
 
+def _parse_localstorage_value(raw):
+    """Normalise localStorage config into a dict of key→value strings.
+
+    Accepted inputs:
+      - dict  {"key": "value", ...}       (from TOML [localstorage] section)
+      - list  ["key=value", ...]           (from CLI --localstorage repeated)
+      - str   "key=value,key2=value2"      (from env var)
+    """
+    if not raw:
+        return {}
+    if isinstance(raw, dict):
+        return {str(k): str(v) for k, v in raw.items()}
+    if isinstance(raw, list):
+        out = {}
+        for item in raw:
+            if "=" in str(item):
+                k, v = str(item).split("=", 1)
+                out[k.strip()] = v.strip()
+        return out
+    if isinstance(raw, str):
+        out = {}
+        for pair in raw.split(","):
+            if "=" in pair:
+                k, v = pair.split("=", 1)
+                out[k.strip()] = v.strip()
+        return out
+    return {}
+
+
+def _apply_localstorage(driver, config, target_url):
+    """Set localStorage entries on the target domain before the real page load."""
+    entries = _parse_localstorage_value(config.get("localstorage"))
+    if not entries:
+        return
+
+    # Navigate to the target origin so localStorage is scoped correctly
+    parsed = urlparse(target_url)
+    origin = f"{parsed.scheme}://{parsed.netloc}"
+    try:
+        driver.get(origin)
+        time.sleep(0.5)
+        for key, value in entries.items():
+            driver.execute_script(
+                "localStorage.setItem(arguments[0], arguments[1]);",
+                key, value,
+            )
+            log.detail(f"localStorage: {key} = {value}")
+    except Exception as e:
+        log.warn(f"Could not set localStorage: {e}")
+
+
 # ---------------------------------------------------------------------------
 # Core logic
 # ---------------------------------------------------------------------------
@@ -1081,6 +1146,7 @@ def fetch_m3u8_and_download(url, config, output_path_override=None, per_url_over
     chrome_options = _build_chrome_options(effective_config)
     driver = webdriver.Chrome(options=chrome_options)
     _apply_adblock_strictness(driver, effective_config)
+    _apply_localstorage(driver, effective_config, url)
 
     try:
         m3u8_urls, video_urls, page_title = extract_m3u8(driver, url)

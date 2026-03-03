@@ -18,7 +18,15 @@
 # cookies = ""                         # Path to a Netscape-format cookies file
 # proxy = ""                           # Proxy for yt-dlp (e.g. "socks5://127.0.0.1:1080")
 # browser_proxy = ""                   # Proxy for Chrome (defaults to proxy if not set)
-# ignore_ssl_errors = false            # Ignore SSL certificate errors everywhere
+# ignore_ssl_errors = false            # Ignore SSL certificate errors
+
+# ── localStorage ──────────────────────────────────────────────────────────────
+# Set localStorage entries on the target domain before the page loads.
+# Useful for player preferences (e.g. JWPlayer quality label).
+
+# [localstorage]
+# "jwplayer.qualityLabel" = "HQ"
+# "player.volume" = "0.8" everywhere
 
 # ── Quality & transcoding ────────────────────────────────────────────────────
 

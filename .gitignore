@@ -1,0 +1,5 @@
+.venv
+venv
+urls.txt
+*.mp4
+*.part

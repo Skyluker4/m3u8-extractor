@@ -2,6 +2,7 @@ import os
 import sys
 import time
 import re
+import json
 import shlex
 import argparse
 import subprocess
@@ -714,6 +715,9 @@ def _build_chrome_options(config):
     """Build Chrome options, optionally loading an adblocker extension."""
     chrome_options = Options()
 
+    # Enable performance logging to capture network requests
+    chrome_options.set_capability("goog:loggingPrefs", {"performance": "ALL"})
+
     use_adblock = config.get("adblock") or config.get("adblock_extension")
     if use_adblock:
         crx_path = _get_adblock_extension(config)
@@ -777,16 +781,50 @@ def _apply_adblock_strictness(driver, config):
 # ---------------------------------------------------------------------------
 # Core logic
 # ---------------------------------------------------------------------------
+def _extract_m3u8_from_network_logs(driver):
+    """Extract m3u8 URLs from Chrome's performance (network) logs."""
+    urls = []
+    try:
+        logs = driver.get_log("performance")
+        for entry in logs:
+            try:
+                msg = json.loads(entry["message"])["message"]
+                method = msg.get("method", "")
+                if method not in ("Network.requestWillBeSent",
+                                  "Network.responseReceived"):
+                    continue
+                req_url = ""
+                if method == "Network.requestWillBeSent":
+                    req_url = msg["params"].get("request", {}).get("url", "")
+                elif method == "Network.responseReceived":
+                    req_url = msg["params"].get("response", {}).get("url", "")
+                if ".m3u8" in req_url:
+                    urls.append(req_url)
+            except (KeyError, json.JSONDecodeError):
+                continue
+    except Exception as e:
+        log.detail(f"Could not read network logs: {e}")
+    return urls
+
+
 def extract_m3u8(driver, url):
-    """Use Selenium to load a page and extract all m3u8 URLs."""
+    """Use Selenium to load a page and extract all m3u8 URLs.
+
+    Searches both the rendered page source and intercepted network requests.
+    """
     driver.get(url)
     time.sleep(5)
 
     page_title = driver.title.strip()
     page_source = driver.page_source
 
-    m3u8_pattern = r'(https?://[^\s"]+\.m3u8)'
+    # Pattern matches m3u8 URLs with optional query strings / fragments
+    m3u8_pattern = r'(https?://[^\s"\'>]+\.m3u8(?:[?#][^\s"\'>]*)?)'
     matches = re.findall(m3u8_pattern, page_source)
+
+    # Also check network logs for m3u8 requests made via XHR/fetch
+    network_urls = _extract_m3u8_from_network_logs(driver)
+    matches.extend(network_urls)
 
     # Deduplicate while preserving order
     seen = set()

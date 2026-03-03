@@ -206,10 +206,22 @@ def load_toml_config(path="config.toml"):
         return {}
     with open(path, "rb") as f:
         data = tomllib.load(f) or {}
+
+    # Extract [[url_rules]] into a separate key before normalising
+    url_rules = data.pop("url_rules", [])
+
     # Normalise bools
     for key in BOOL_KEYS:
         if key in data:
             data[key] = _parse_bool(data[key])
+
+    # Normalise bools inside each rule
+    for rule in url_rules:
+        for key in BOOL_KEYS:
+            if key in rule:
+                rule[key] = _parse_bool(rule[key])
+
+    data["_url_rules"] = url_rules
     return data
 
 
@@ -470,6 +482,31 @@ def _parse_group_directive(line, per_url_parser):
     except SystemExit:
         log.warn(f"Could not parse group directive: {line}")
         return {}
+
+
+# ---------------------------------------------------------------------------
+# URL rules matching
+# ---------------------------------------------------------------------------
+def _match_url_rules(url, url_rules):
+    """Find all url_rules whose pattern matches the URL and merge them.
+
+    Rules are applied in order, so later rules override earlier ones.
+    Each rule is a dict with a 'pattern' key (regex) and any config keys.
+    """
+    merged = {}
+    for rule in url_rules:
+        pattern = rule.get("pattern")
+        if not pattern:
+            continue
+        try:
+            if re.search(pattern, url):
+                overrides = {k: v for k, v in rule.items() if k != "pattern"}
+                if overrides:
+                    log.detail(f"URL rule matched: '{pattern}'")
+                merged.update(overrides)
+        except re.error as e:
+            log.warn(f"Invalid url_rules pattern '{pattern}': {e}")
+    return merged
 
 
 # ---------------------------------------------------------------------------
@@ -878,6 +915,17 @@ def fetch_m3u8_and_download(url, config, output_path_override=None, per_url_over
     """Extract the m3u8 URL from a page and download with yt-dlp."""
     # Merge per-URL overrides on top of the global config
     effective_config = dict(config)
+
+    # Remove internal keys that shouldn't propagate as yt-dlp options
+    url_rules = effective_config.pop("_url_rules", [])
+
+    # Apply URL rules (pattern-matched config from TOML)
+    if url_rules:
+        rule_overrides = _match_url_rules(url, url_rules)
+        if rule_overrides:
+            effective_config.update(rule_overrides)
+
+    # Apply per-URL / group overrides on top
     if per_url_overrides:
         effective_config.update(per_url_overrides)
 

@@ -18,3 +18,18 @@
 # https://example.com/video7 -o "clips/" --thumbnail --transcode mkv
 # https://example.com/video8 --referrer "https://example.com" --adblock
 # https://example.com/video9 --m3u8-select all --ignore-ssl-errors
+
+# ── Group directives ────────────────────────────────────────────────────────
+# Use --- to set options for all URLs that follow, until the next ---
+
+# --- --audio-only -q "bestaudio"
+# https://example.com/song1
+# https://example.com/song2
+# https://example.com/song3
+
+# --- --captions --transcode mkv
+# https://example.com/lecture1
+# https://example.com/lecture2
+
+# --- (reset to global defaults)
+# https://example.com/normal-video

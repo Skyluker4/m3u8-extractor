@@ -5,8 +5,10 @@ Extract m3u8 stream URLs from web pages and download them with [yt-dlp](https://
 ## Features
 
 - **Automatic m3u8 extraction** — loads pages with headless Chrome, finds m3u8 URLs in the rendered source
+- **Smart extractor routing** — tries yt-dlp's native extractors first, falls back to Selenium m3u8 only when needed
 - **Three config sources** — CLI flags, environment variables, and TOML config file (priority: CLI > env > TOML > defaults)
-- **Batch downloads** — read URLs from a file, with per-URL option overrides
+- **URL rules** — pattern-matched per-site config in TOML (e.g. always use audio-only for music sites)
+- **Batch downloads** — read URLs from a file, with per-URL and group option overrides
 - **Parallel downloads** — download all URLs simultaneously by default, or limit concurrency
 - **Clipboard watch mode** — monitors clipboard for URLs and downloads automatically
 - **Multiple m3u8 handling** — warns when multiple streams are found, with options to select or filter
@@ -112,6 +114,13 @@ If no URL is given and `--watch` is not set, URLs are read from a file (`urls.tx
 | `--adblock`           | Load uBlock Origin Lite in Chrome (auto-downloaded on first use) |
 | `--adblock-extension` | Path to a custom `.crx` adblocker extension                      |
 
+### Extractor selection
+
+| Flag             | Description                                                                                           |
+| ---------------- | ----------------------------------------------------------------------------------------------------- |
+| `--extractor`    | Strategy: `auto` (default, try yt-dlp native then m3u8), `ytdlp` (native only), `m3u8` (Selenium only) |
+| `--extractors`   | Comma-separated allowlist of yt-dlp extractor names (e.g. `youtube,vimeo`)                             |
+
 ### Proxy
 
 | Flag              | Description                                                 |
@@ -137,9 +146,12 @@ If no URL is given and `--watch` is not set, URLs are read from a file (`urls.tx
 Settings are resolved with this priority:
 
 1. **CLI arguments** (highest)
-2. **Environment variables**
-3. **TOML config file**
-4. **Built-in defaults** (lowest)
+2. **Per-URL flags** (in URL list file)
+3. **Group directives** (in URL list file)
+4. **URL rules** (pattern-matched from TOML config)
+5. **Environment variables**
+6. **TOML config file**
+7. **Built-in defaults** (lowest)
 
 ### Config file
 
@@ -163,6 +175,9 @@ cookies = ""
 use_system_ytdlp = false
 # yt_dlp_path = "/usr/local/bin/yt-dlp"
 
+extractor = "auto"    # "auto", "ytdlp", or "m3u8"
+# extractors = "youtube,vimeo"  # restrict yt-dlp to these extractors
+
 m3u8_select = "first"    # "first", "last", or "all"
 # m3u8_filter = "pattern"
 
@@ -183,6 +198,33 @@ video_only = false
 video_and_captions_only = false
 ```
 
+### URL rules
+
+Define per-site config using regex patterns in `[[url_rules]]` sections:
+
+```toml
+# Use yt-dlp native extractor for YouTube
+[[url_rules]]
+pattern = "youtube\\.com|youtu\\.be"
+extractor = "ytdlp"
+
+# Audio only for a music site
+[[url_rules]]
+pattern = "example\\.com/music"
+audio_only = true
+quality = "bestaudio"
+output_path = "music/"
+
+# Extra options for a sketchy site
+[[url_rules]]
+pattern = "sketchy-site\\.com"
+adblock = true
+ignore_ssl_errors = true
+proxy = "socks5://127.0.0.1:1080"
+```
+
+Rules are checked in order — all matching rules are merged, with later rules overriding earlier ones. Any config option can be used in a rule.
+
 ### Environment variables
 
 Every option has a corresponding environment variable prefixed with `M3U8_`:
@@ -199,6 +241,8 @@ M3U8_QUALITY="bestvideo+bestaudio"
 M3U8_TRANSCODE=mp4
 M3U8_YT_DLP_PATH=""
 M3U8_USE_SYSTEM_YTDLP=false
+M3U8_EXTRACTOR=auto
+M3U8_EXTRACTORS=""
 M3U8_PARALLEL=all
 M3U8_SELECT=first
 M3U8_FILTER=""
@@ -229,7 +273,7 @@ Use `-c` or `-f` to specify an explicit path.
 
 ## URL list format
 
-The URL list file supports three formats per line:
+The URL list file supports three formats per line, plus group directives:
 
 ```
 # Comments start with #
@@ -247,6 +291,34 @@ https://example.com/video5 -o "downloads/" --thumbnail --transcode mkv
 ```
 
 Per-URL flags override the global config for that specific download. All CLI flags are supported.
+
+### Group directives
+
+Use `---` to set options for a group of URLs:
+
+```
+# Start an audio-only group
+--- --audio-only -q "bestaudio"
+https://example.com/song1
+https://example.com/song2
+https://example.com/song3
+
+# Switch to a different group with captions
+--- --captions --transcode mkv
+https://example.com/lecture1
+https://example.com/lecture2
+
+# Reset to global defaults
+---
+https://example.com/normal-video
+
+# Per-URL options still override the group
+--- --audio-only
+https://example.com/song4
+https://example.com/video5 --video-only   # overrides audio-only for this URL
+```
+
+Group options apply to all URLs that follow, until the next `---` directive. Use `---` alone to reset back to global defaults.
 
 ## Examples
 
@@ -274,6 +346,12 @@ m3u8-extractor --m3u8-select all "https://example.com/multi-stream"
 
 # Filter m3u8 URLs by pattern
 m3u8-extractor --m3u8-filter "1080p" "https://example.com/video"
+
+# Use yt-dlp native extractor only (skip Selenium)
+m3u8-extractor --extractor ytdlp "https://youtube.com/watch?v=abc123"
+
+# Restrict to specific extractors
+m3u8-extractor --extractors "youtube,vimeo" "https://youtube.com/watch?v=abc123"
 ```
 
 ## License

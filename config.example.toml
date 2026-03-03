@@ -30,6 +30,11 @@
 # use_system_ytdlp = false             # Use the system yt-dlp binary instead of Python lib
 # yt_dlp_path = "/usr/local/bin/yt-dlp"  # Path to a specific yt-dlp binary
 
+# ── Extractor ────────────────────────────────────────────────────────────────
+
+# extractor = "auto"                   # "auto", "ytdlp", or "m3u8"
+# extractors = "youtube,vimeo"          # Restrict yt-dlp to these extractors only
+
 # ── Parallelism ──────────────────────────────────────────────────────────────
 
 # parallel = "all"                     # "all", a number, "cores", or "logical_cores"
@@ -54,3 +59,23 @@
 # audio_only = false                   # Download only the audio stream
 # video_only = false                   # Download only the video stream (no audio)
 # video_and_captions_only = false      # Download video and captions only (no audio)
+
+# ── URL rules ────────────────────────────────────────────────────────────────
+# Pattern-matched per-site config. All matching rules are merged in order.
+# Any config key above can be used inside a rule.
+
+# [[url_rules]]
+# pattern = "youtube\\.com|youtu\\.be"
+# extractor = "ytdlp"
+
+# [[url_rules]]
+# pattern = "example\\.com/music"
+# audio_only = true
+# quality = "bestaudio"
+# output_path = "music/"
+
+# [[url_rules]]
+# pattern = "sketchy-site\\.com"
+# adblock = true
+# ignore_ssl_errors = true
+# proxy = "socks5://127.0.0.1:1080"

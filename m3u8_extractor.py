@@ -259,7 +259,7 @@ DEFAULTS = {
     "yt_dlp_path": None,         # custom path to yt-dlp binary
     "use_system_ytdlp": False,   # use system yt-dlp instead of Python library
     "parallel": "all",           # "all", number, "cores", "logical_cores"
-    "m3u8_select": "first",       # "first", "last", or "all"
+    "m3u8_select": "first",       # "first", "last", "all", or "interactive"
     "m3u8_filter": None,          # regex pattern to filter m3u8 URLs
     "video_filter": None,         # regex pattern to filter direct video URLs
     "stream_type": "both",        # "both", "m3u8", or "video"
@@ -449,7 +449,7 @@ def build_arg_parser():
                            "'both' (default), 'm3u8' (only m3u8), or 'video' (only direct files)")
     m3u8.add_argument("--m3u8-select",
                       help="Which stream to download when multiple are found: "
-                           "'first' (default), 'last', or 'all'")
+                           "'first' (default), 'last', 'all', or 'interactive'")
     m3u8.add_argument("--m3u8-filter",
                       help="Regex pattern to filter m3u8 URLs (applied before selection)")
     m3u8.add_argument("--video-filter",
@@ -1352,6 +1352,90 @@ def _filter_urls(urls, pattern, label):
         return urls
 
 
+def _parse_selection(raw, count):
+    """Parse a user selection string into a set of 1-based indices.
+
+    Returns a set of valid indices, or None if the input is invalid.
+    """
+    selected = set()
+    for token in raw.split(","):
+        token = token.strip()
+        if "-" in token:
+            parts = token.split("-", 1)
+            try:
+                lo, hi = int(parts[0]), int(parts[1])
+            except (ValueError, IndexError):
+                return None
+            if lo < 1 or hi > count or lo > hi:
+                return None
+            selected.update(range(lo, hi + 1))
+        else:
+            try:
+                n = int(token)
+            except ValueError:
+                return None
+            if n < 1 or n > count:
+                return None
+            selected.add(n)
+    return selected if selected else None
+
+
+def _interactive_select(urls, label="stream"):
+    """Prompt the user to interactively pick which URLs to download."""
+    if len(urls) <= 1:
+        return urls
+
+    if not sys.stdin.isatty():
+        log.warn("Interactive selection unavailable (stdin is not a TTY) — falling back to first")
+        return [urls[0]]
+
+    # Pause the progress bar so it doesn't overwrite the prompt
+    global _tracker
+    paused_tracker = _tracker
+    if paused_tracker is not None:
+        paused_tracker.clear_bar()
+        _tracker = None
+
+    try:
+        return _interactive_select_loop(urls, label)
+    finally:
+        if paused_tracker is not None:
+            _tracker = paused_tracker
+            _tracker.draw_bar()
+
+
+def _interactive_select_loop(urls, label):
+    """Inner loop for interactive selection (tracker already paused)."""
+    print()
+    log.info(f"Select which {label} URL(s) to download:")
+    for i, u in enumerate(urls, 1):
+        log.list_item(i, u)
+    print()
+
+    while True:
+        try:
+            raw = input(f"Enter number(s) to download (e.g. 1,3 or 1-3 or 'all') [{1}]: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            log.warn("Selection cancelled — falling back to first")
+            return [urls[0]]
+
+        if not raw:
+            return [urls[0]]
+
+        if raw.lower() == "all":
+            return urls
+
+        indices = _parse_selection(raw, len(urls))
+        if indices is None:
+            log.warn(f"Invalid selection '{raw}'. Use numbers between 1 and {len(urls)}, ranges like 1-3, or 'all'.")
+            continue
+
+        chosen = [urls[i - 1] for i in sorted(indices)]
+        log.info(f"Selected {len(chosen)} {label} URL(s)")
+        return chosen
+
+
 def _select_urls(urls, config, page_url, label="stream"):
     """Select which URLs to download from a list."""
     if not urls:
@@ -1366,6 +1450,8 @@ def _select_urls(urls, config, page_url, label="stream"):
     if mode == "all":
         log.info(f"Downloading all {len(urls)} {label} URLs")
         return urls
+    if mode == "interactive":
+        return _interactive_select(urls, label)
     if mode == "last":
         chosen = urls[-1]
         if len(urls) > 1:

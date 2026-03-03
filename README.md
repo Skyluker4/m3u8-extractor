@@ -109,7 +109,7 @@ If no URL is given and `--watch` is not set, URLs are read from a file (`urls.tx
 | Flag              | Description                                                                   |
 | ----------------- | ----------------------------------------------------------------------------- |
 | `--stream-type`   | Which stream types to look for: `both` (default), `m3u8`, or `video`          |
-| `--m3u8-select`   | Which stream when multiple found: `first` (default), `last`, or `all`         |
+| `--m3u8-select`   | Which stream when multiple found: `first` (default), `last`, `all`, or `interactive` |
 | `--m3u8-filter`   | Regex to filter m3u8 URLs before selection                                    |
 | `--video-filter`  | Regex to filter direct video URLs (mp4, webm, etc.) before selection          |
 
@@ -202,7 +202,7 @@ use_system_ytdlp = false
 extractor = "auto"    # "auto", "ytdlp", or "m3u8"
 # extractors = "youtube,vimeo"  # restrict yt-dlp to these extractors
 
-m3u8_select = "first"    # "first", "last", or "all"
+m3u8_select = "first"    # "first", "last", "all", or "interactive"
 # m3u8_filter = "pattern"
 
 adblock = false

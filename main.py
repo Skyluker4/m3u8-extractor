@@ -125,6 +125,8 @@ DEFAULTS = {
     "referrer": None,
     "use_base_url_as_referrer": False,
     "cookies": None,
+    "headers": None,              # custom HTTP headers (list or dict)
+    "auth": None,                 # HTTP basic auth "user:pass"
     "quality": None,
     "transcode": None,
     "yt_dlp_path": None,         # custom path to yt-dlp binary
@@ -162,6 +164,8 @@ ENV_MAP = {
     "referrer":                 "M3U8_REFERRER",
     "use_base_url_as_referrer": "M3U8_USE_BASE_URL_AS_REFERRER",
     "cookies":                  "M3U8_COOKIES",
+    "headers":                  "M3U8_HEADERS",
+    "auth":                     "M3U8_AUTH",
     "quality":                  "M3U8_QUALITY",
     "transcode":                "M3U8_TRANSCODE",
     "yt_dlp_path":              "M3U8_YT_DLP_PATH",
@@ -224,6 +228,11 @@ def load_toml_config(path="config.toml"):
     if isinstance(localstorage, dict) and localstorage:
         data["localstorage"] = localstorage
 
+    # Extract [headers] table into the flat key
+    headers = data.pop("headers", None)
+    if isinstance(headers, dict) and headers:
+        data["headers"] = headers
+
     # Normalise bools
     for key in BOOL_KEYS:
         if key in data:
@@ -276,6 +285,10 @@ def build_arg_parser():
                    help="Automatically use each page URL as the Referer header")
     p.add_argument("--cookies",
                    help="Path to a Netscape-format cookies file")
+    p.add_argument("--header", action="append", metavar="NAME=VALUE",
+                   help="Custom HTTP header (repeatable, e.g. --header 'X-Token=abc')")
+    p.add_argument("--auth", metavar="USER:PASS",
+                   help="HTTP basic auth credentials (e.g. 'user:password')")
     p.add_argument("-q", "--quality",
                    help="yt-dlp format / quality selector (e.g. 'bestvideo+bestaudio')")
     p.add_argument("--transcode",
@@ -387,6 +400,8 @@ def load_cli_config(args_ns):
         "referrer": args_ns.referrer,
         "use_base_url_as_referrer": args_ns.use_base_url_as_referrer,
         "cookies": args_ns.cookies,
+        "headers": args_ns.header,
+        "auth": args_ns.auth,
         "quality": args_ns.quality,
         "transcode": args_ns.transcode,
         "yt_dlp_path": args_ns.yt_dlp_path,
@@ -438,6 +453,8 @@ def _build_per_url_parser():
     p.add_argument("--referrer")
     p.add_argument("--use-base-url-as-referrer", action="store_true", default=None)
     p.add_argument("--cookies")
+    p.add_argument("--header", dest="headers", action="append")
+    p.add_argument("--auth")
     p.add_argument("-q", "--quality")
     p.add_argument("--transcode")
     p.add_argument("--use-system-ytdlp", action="store_true", default=None)
@@ -625,6 +642,19 @@ def build_ydl_opts(config, title, output_path_override=None):
     if cookies:
         opts["cookiefile"] = cookies
 
+    # Custom headers
+    headers = _parse_headers_value(config.get("headers"))
+    if headers:
+        h = opts.setdefault("http_headers", {})
+        h.update(headers)
+
+    # HTTP basic auth
+    auth = config.get("auth")
+    if auth and ":" in str(auth):
+        username, password = str(auth).split(":", 1)
+        opts["username"] = username
+        opts["password"] = password
+
     # Proxy
     proxy = config.get("proxy")
     if proxy:
@@ -679,6 +709,17 @@ def _build_system_ytdlp_cmd(config, m3u8_url, title, output_path_override=None):
     cookies = config.get("cookies")
     if cookies:
         cmd += ["--cookies", cookies]
+
+    # Custom headers
+    headers = _parse_headers_value(config.get("headers"))
+    for hdr_name, hdr_value in headers.items():
+        cmd += ["--add-header", f"{hdr_name}:{hdr_value}"]
+
+    # HTTP basic auth
+    auth = config.get("auth")
+    if auth and ":" in str(auth):
+        username, password = str(auth).split(":", 1)
+        cmd += ["--username", username, "--password", password]
 
     # Proxy
     proxy = config.get("proxy")
@@ -854,6 +895,118 @@ def _apply_localstorage(driver, config, target_url):
             log.detail(f"localStorage: {key} = {value}")
     except Exception as e:
         log.warn(f"Could not set localStorage: {e}")
+
+
+def _parse_headers_value(raw):
+    """Normalise custom headers config into a dict of name→value strings.
+
+    Accepted inputs:
+      - dict  {"Name": "Value", ...}       (from TOML [headers] section)
+      - list  ["Name=Value", ...]           (from CLI --header repeated)
+      - str   "Name=Value,Name2=Value2"     (from env var)
+    """
+    if not raw:
+        return {}
+    if isinstance(raw, dict):
+        return {str(k): str(v) for k, v in raw.items()}
+    if isinstance(raw, list):
+        out = {}
+        for item in raw:
+            if "=" in str(item):
+                k, v = str(item).split("=", 1)
+                out[k.strip()] = v.strip()
+        return out
+    if isinstance(raw, str):
+        out = {}
+        for pair in raw.split(","):
+            if "=" in pair:
+                k, v = pair.split("=", 1)
+                out[k.strip()] = v.strip()
+        return out
+    return {}
+
+
+def _parse_netscape_cookies(filepath):
+    """Parse a Netscape-format cookies file into a list of Selenium cookie dicts."""
+    cookies = []
+    try:
+        with open(filepath, "r") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                parts = line.split("\t")
+                if len(parts) < 7:
+                    continue
+                domain, _, path, secure, expiry, name, value = parts[:7]
+                cookie = {
+                    "name": name,
+                    "value": value,
+                    "domain": domain,
+                    "path": path,
+                    "secure": secure.upper() == "TRUE",
+                }
+                try:
+                    exp = int(expiry)
+                    if exp > 0:
+                        cookie["expiry"] = exp
+                except ValueError:
+                    pass
+                cookies.append(cookie)
+    except Exception as e:
+        log.warn(f"Could not parse cookies file: {e}")
+    return cookies
+
+
+def _apply_browser_cookies(driver, config, target_url):
+    """Load cookies from a Netscape file into the Selenium browser."""
+    cookie_file = config.get("cookies")
+    if not cookie_file:
+        return
+    cookies = _parse_netscape_cookies(cookie_file)
+    if not cookies:
+        return
+
+    # Navigate to the target origin first so cookies are scoped correctly
+    parsed = urlparse(target_url)
+    origin = f"{parsed.scheme}://{parsed.netloc}"
+    try:
+        driver.get(origin)
+        time.sleep(0.5)
+        loaded = 0
+        for cookie in cookies:
+            try:
+                driver.add_cookie(cookie)
+                loaded += 1
+            except Exception:
+                pass  # cookies for other domains will silently fail
+        log.detail(f"Loaded {loaded}/{len(cookies)} cookie(s) into browser")
+    except Exception as e:
+        log.warn(f"Could not load browser cookies: {e}")
+
+
+def _apply_browser_headers_and_auth(driver, config):
+    """Set custom HTTP headers and basic auth in the browser via CDP."""
+    import base64
+
+    headers = _parse_headers_value(config.get("headers"))
+
+    # HTTP basic auth → Authorization header
+    auth = config.get("auth")
+    if auth and ":" in str(auth):
+        encoded = base64.b64encode(str(auth).encode()).decode()
+        headers["Authorization"] = f"Basic {encoded}"
+
+    if not headers:
+        return
+
+    try:
+        driver.execute_cdp_cmd("Network.enable", {})
+        driver.execute_cdp_cmd("Network.setExtraHTTPHeaders", {"headers": headers})
+        names = ", ".join(headers.keys())
+        log.detail(f"Browser headers set: {names}")
+    except Exception as e:
+        log.warn(f"Could not set browser headers: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -1146,6 +1299,8 @@ def fetch_m3u8_and_download(url, config, output_path_override=None, per_url_over
     chrome_options = _build_chrome_options(effective_config)
     driver = webdriver.Chrome(options=chrome_options)
     _apply_adblock_strictness(driver, effective_config)
+    _apply_browser_headers_and_auth(driver, effective_config)
+    _apply_browser_cookies(driver, effective_config, url)
     _apply_localstorage(driver, effective_config, url)
 
     try:

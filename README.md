@@ -145,6 +145,15 @@ If no URL is given and `--watch` is not set, URLs are read from a file (`urls.tx
 
 Example: `--localstorage "jwplayer.qualityLabel=HQ"` to force HQ quality on JWPlayer sites.
 
+### Headers & authentication
+
+| Flag                  | Description                                          |
+| --------------------- | ---------------------------------------------------- |
+| `--header NAME=VALUE` | Custom HTTP header for browser & yt-dlp (repeatable) |
+| `--auth USER:PASS`    | HTTP basic auth credentials                          |
+
+The `--cookies` file is loaded into both the Selenium browser and yt-dlp, so auth-gated pages work during extraction too.
+
 ### Watch mode
 
 | Flag               | Description                                         |

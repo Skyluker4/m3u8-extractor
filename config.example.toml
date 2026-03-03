@@ -26,7 +26,15 @@
 
 # [localstorage]
 # "jwplayer.qualityLabel" = "HQ"
-# "player.volume" = "0.8" everywhere
+# "player.volume" = "0.8"
+
+# ── Headers & auth ─────────────────────────────────────────────────────────────
+
+# auth = "user:password"               # HTTP basic auth
+
+# [headers]
+# "X-Custom-Token" = "abc123"
+# "Accept-Language" = "en-US"
 
 # ── Quality & transcoding ────────────────────────────────────────────────────
 

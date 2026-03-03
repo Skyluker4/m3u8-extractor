@@ -4,6 +4,7 @@ import time
 import re
 import shlex
 import argparse
+import subprocess
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 import yt_dlp
@@ -63,6 +64,8 @@ DEFAULTS = {
     "cookies": None,
     "quality": None,
     "transcode": None,
+    "yt_dlp_path": None,         # custom path to yt-dlp binary
+    "use_system_ytdlp": False,   # use system yt-dlp instead of Python library
     # Download-mode flags (all False = default yt-dlp behaviour)
     "thumbnail": False,          # download thumbnail alongside video
     "thumbnail_only": False,
@@ -84,6 +87,8 @@ ENV_MAP = {
     "cookies":                  "M3U8_COOKIES",
     "quality":                  "M3U8_QUALITY",
     "transcode":                "M3U8_TRANSCODE",
+    "yt_dlp_path":              "M3U8_YT_DLP_PATH",
+    "use_system_ytdlp":         "M3U8_USE_SYSTEM_YTDLP",
     "thumbnail":                "M3U8_THUMBNAIL",
     "thumbnail_only":           "M3U8_THUMBNAIL_ONLY",
     "captions":                 "M3U8_CAPTIONS",
@@ -94,7 +99,8 @@ ENV_MAP = {
 }
 
 BOOL_KEYS = {
-    "use_base_url_as_referrer", "thumbnail", "thumbnail_only",
+    "use_base_url_as_referrer", "use_system_ytdlp",
+    "thumbnail", "thumbnail_only",
     "captions", "captions_only", "audio_only", "video_only",
     "video_and_captions_only",
 }
@@ -166,6 +172,13 @@ def build_arg_parser():
     p.add_argument("--transcode",
                    help="Transcode to this format after download (e.g. mp4, mkv)")
 
+    # yt-dlp binary options
+    ydlp = p.add_argument_group("yt-dlp binary")
+    ydlp.add_argument("--use-system-ytdlp", action="store_true", default=None,
+                      help="Use the system yt-dlp binary instead of the Python library")
+    ydlp.add_argument("--yt-dlp-path",
+                      help="Path to a specific yt-dlp binary")
+
     # Download-mode flags
     mode = p.add_argument_group("download mode")
     mode.add_argument("--thumbnail", action="store_true", default=None,
@@ -203,6 +216,8 @@ def load_cli_config(args_ns):
         "cookies": args_ns.cookies,
         "quality": args_ns.quality,
         "transcode": args_ns.transcode,
+        "yt_dlp_path": args_ns.yt_dlp_path,
+        "use_system_ytdlp": args_ns.use_system_ytdlp,
         "thumbnail": args_ns.thumbnail,
         "thumbnail_only": args_ns.thumbnail_only,
         "captions": args_ns.captions,
@@ -238,6 +253,8 @@ def _build_per_url_parser():
     p.add_argument("--cookies")
     p.add_argument("-q", "--quality")
     p.add_argument("--transcode")
+    p.add_argument("--use-system-ytdlp", action="store_true", default=None)
+    p.add_argument("--yt-dlp-path")
     p.add_argument("--thumbnail", action="store_true", default=None)
     p.add_argument("--thumbnail-only", action="store_true", default=None)
     p.add_argument("--captions", action="store_true", default=None)
@@ -362,6 +379,53 @@ def build_ydl_opts(config, title, output_path_override=None):
     return opts, outtmpl
 
 
+def _build_system_ytdlp_cmd(config, m3u8_url, title, output_path_override=None):
+    """Build a command-line list for invoking the system yt-dlp binary."""
+    binary = config.get("yt_dlp_path") or "yt-dlp"
+    outtmpl = _resolve_outtmpl(config, title, output_path_override)
+
+    cmd = [binary, "-o", outtmpl]
+
+    # Quality / format
+    fmt = config.get("quality")
+    if config.get("audio_only"):
+        fmt = "bestaudio/best"
+    elif config.get("video_only") or config.get("video_and_captions_only"):
+        fmt = "bestvideo/best"
+    if fmt:
+        cmd += ["-f", fmt]
+
+    # Captions
+    if config.get("captions") or config.get("video_and_captions_only"):
+        cmd += ["--write-subs", "--all-subs"]
+    if config.get("captions_only"):
+        cmd += ["--write-subs", "--all-subs", "--skip-download"]
+
+    # Thumbnails
+    if config.get("thumbnail"):
+        cmd.append("--write-thumbnail")
+    if config.get("thumbnail_only"):
+        cmd += ["--write-thumbnail", "--skip-download"]
+
+    # Transcoding
+    transcode = config.get("transcode")
+    if transcode:
+        cmd += ["--recode-video", transcode]
+
+    # Referrer
+    referrer = config.get("referrer")
+    if referrer:
+        cmd += ["--referer", referrer]
+
+    # Cookies
+    cookies = config.get("cookies")
+    if cookies:
+        cmd += ["--cookies", cookies]
+
+    cmd.append(m3u8_url)
+    return cmd, outtmpl
+
+
 # ---------------------------------------------------------------------------
 # Core logic
 # ---------------------------------------------------------------------------
@@ -420,12 +484,26 @@ def fetch_m3u8_and_download(url, config, output_path_override=None, per_url_over
 
         print(f"Found m3u8 URL: {m3u8_url}")
 
-        ydl_opts, outtmpl = build_ydl_opts(effective_config, page_title, output_path_override)
-        print(f"Downloading to {outtmpl}...")
+        use_system = effective_config.get("use_system_ytdlp") or effective_config.get("yt_dlp_path")
 
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([m3u8_url])
-        print(f"Download completed: {outtmpl}")
+        if use_system:
+            cmd, outtmpl = _build_system_ytdlp_cmd(
+                effective_config, m3u8_url, page_title, output_path_override
+            )
+            print(f"Downloading to {outtmpl} (system yt-dlp)...")
+            result = subprocess.run(cmd, check=False)
+            if result.returncode == 0:
+                print(f"Download completed: {outtmpl}")
+            else:
+                print(f"yt-dlp exited with code {result.returncode}")
+        else:
+            ydl_opts, outtmpl = build_ydl_opts(
+                effective_config, page_title, output_path_override
+            )
+            print(f"Downloading to {outtmpl}...")
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([m3u8_url])
+            print(f"Download completed: {outtmpl}")
 
     except Exception as e:
         print(f"An error occurred: {e}")

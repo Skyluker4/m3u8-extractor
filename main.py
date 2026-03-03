@@ -313,6 +313,12 @@ def build_arg_parser():
                    help="Path to TOML config file "
                         "(default: ./config.toml or ~/.config/m3u8-extractor/config.toml)")
 
+    # Watch mode
+    p.add_argument("-w", "--watch", action="store_true", default=False,
+                   help="Watch the clipboard for URLs and download automatically")
+    p.add_argument("--watch-interval", type=float, default=1.0,
+                   help="Clipboard polling interval in seconds (default: 1.0)")
+
     return p
 
 
@@ -876,6 +882,70 @@ def download_from_file(file_path, config):
 
 
 # ---------------------------------------------------------------------------
+# Clipboard watch mode
+# ---------------------------------------------------------------------------
+def _read_clipboard():
+    """Read the current clipboard text. Returns empty string on failure."""
+    # Try platform-specific commands
+    for cmd in ("xclip -selection clipboard -o",
+                "xsel --clipboard --output",
+                "pbpaste",
+                "powershell.exe -command Get-Clipboard"):
+        try:
+            result = subprocess.run(
+                cmd.split(), capture_output=True, text=True, timeout=2,
+            )
+            if result.returncode == 0:
+                return result.stdout.strip()
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            continue
+    return ""
+
+
+def _looks_like_url(text):
+    """Quick check if text looks like a URL worth trying."""
+    return bool(text) and re.match(r'https?://', text.strip().split('\n')[0])
+
+
+def watch_clipboard(config, interval=1.0):
+    """Poll the clipboard for new URLs and download them automatically."""
+    log.header("Watching clipboard for URLs  (Ctrl+C to stop)")
+    seen = set()
+    last_text = ""
+
+    # Prime with current clipboard so we don't immediately download
+    # whatever is already there
+    last_text = _read_clipboard()
+    if _looks_like_url(last_text):
+        seen.add(last_text.strip().split('\n')[0])
+
+    try:
+        while True:
+            time.sleep(interval)
+            text = _read_clipboard()
+            if not text or text == last_text:
+                continue
+            last_text = text
+
+            # Extract the first line as the URL
+            url = text.strip().split('\n')[0].strip()
+            if not _looks_like_url(url):
+                continue
+            if url in seen:
+                continue
+
+            seen.add(url)
+            log.info(f"Clipboard URL detected: {url}")
+            try:
+                fetch_m3u8_and_download(url, config)
+            except Exception as exc:
+                log.error(f"Failed: {url} — {exc}")
+
+    except KeyboardInterrupt:
+        log.header(f"Stopped. Downloaded {len(seen)} URL(s).")
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 def main():
@@ -890,7 +960,9 @@ def main():
 
     config = merge_config(cli_cfg, env_cfg, toml_cfg)
 
-    if args.url:
+    if args.watch:
+        watch_clipboard(config, interval=args.watch_interval)
+    elif args.url:
         # One-off download: use the URL directly
         fetch_m3u8_and_download(args.url, config)
     else:

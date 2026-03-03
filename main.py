@@ -143,6 +143,8 @@ def build_arg_parser():
         description="Extract m3u8 URLs from web pages and download with yt-dlp.",
     )
 
+    p.add_argument("url", nargs="?", default=None,
+                   help="URL to download directly (for one-off downloads)")
     p.add_argument("-f", "--urls-file",
                    help="Path to file containing URLs "
                         "(default: ./urls.txt or ~/.config/m3u8-extractor/urls.txt)")
@@ -417,9 +419,13 @@ def main():
 
     config = merge_config(cli_cfg, env_cfg, toml_cfg)
 
-    # Resolve URLs file: explicit config value > CWD > user config dir
-    urls_file = _resolve_default_file(config["urls_file"])
-    download_from_file(urls_file, config)
+    if args.url:
+        # One-off download: use the URL directly
+        fetch_m3u8_and_download(args.url, config)
+    else:
+        # Batch download from file
+        urls_file = _resolve_default_file(config["urls_file"])
+        download_from_file(urls_file, config)
 
 
 if __name__ == "__main__":

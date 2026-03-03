@@ -24,6 +24,67 @@ else:
 
 
 # ---------------------------------------------------------------------------
+# Pretty printing
+# ---------------------------------------------------------------------------
+class _Style:
+    """ANSI escape helpers — degrades gracefully when not a TTY."""
+
+    RESET  = "\033[0m"
+    BOLD   = "\033[1m"
+    DIM    = "\033[2m"
+    RED    = "\033[91m"
+    GREEN  = "\033[92m"
+    YELLOW = "\033[93m"
+    BLUE   = "\033[94m"
+    CYAN   = "\033[96m"
+
+    _enabled = hasattr(sys.stdout, "isatty") and sys.stdout.isatty()
+
+    @classmethod
+    def _c(cls, code, text):
+        return f"{code}{text}{cls.RESET}" if cls._enabled else text
+
+    @classmethod
+    def info(cls, msg):
+        print(f"{cls._c(cls.CYAN, 'ℹ')}  {msg}")
+
+    @classmethod
+    def success(cls, msg):
+        print(f"{cls._c(cls.GREEN, '✔')}  {msg}")
+
+    @classmethod
+    def warn(cls, msg):
+        print(f"{cls._c(cls.YELLOW, '⚠')}  {msg}")
+
+    @classmethod
+    def error(cls, msg):
+        print(f"{cls._c(cls.RED, '✖')}  {msg}")
+
+    @classmethod
+    def step(cls, msg):
+        print(f"{cls._c(cls.BLUE, '▸')}  {msg}")
+
+    @classmethod
+    def detail(cls, msg):
+        print(f"   {cls._c(cls.DIM, msg)}")
+
+    @classmethod
+    def header(cls, msg):
+        if cls._enabled:
+            print(f"\n{cls.BOLD}{msg}{cls.RESET}")
+        else:
+            print(f"\n{msg}")
+
+    @classmethod
+    def list_item(cls, index, text):
+        idx = cls._c(cls.DIM, f"[{index}]")
+        print(f"   {idx} {text}")
+
+
+log = _Style
+
+
+# ---------------------------------------------------------------------------
 # Default paths
 # ---------------------------------------------------------------------------
 APP_NAME = "m3u8-extractor"
@@ -485,7 +546,7 @@ def _get_adblock_extension(config):
     if custom:
         if os.path.isfile(custom):
             return custom
-        print(f"WARNING: adblock extension not found at '{custom}'")
+        log.warn(f"Adblock extension not found at '{custom}'")
         return None
 
     # Look in default config dir, then CWD
@@ -501,14 +562,14 @@ def _get_adblock_extension(config):
     cache_dir = _default_config_dir()
     os.makedirs(cache_dir, exist_ok=True)
     dest = os.path.join(cache_dir, crx_name)
-    print("Downloading uBlock Origin Lite extension...")
+    log.step("Downloading uBlock Origin Lite extension...")
     try:
         import urllib.request
         urllib.request.urlretrieve(DEFAULT_ADBLOCK_URL, dest)
-        print(f"  Saved to {dest}")
+        log.success(f"Saved to {dest}")
         return dest
     except Exception as e:
-        print(f"  WARNING: failed to download adblocker: {e}")
+        log.warn(f"Failed to download adblocker: {e}")
         return None
 
 
@@ -523,9 +584,9 @@ def _build_chrome_options(config):
             # New headless mode (Chrome 112+) is required for extensions
             chrome_options.add_argument("--headless=new")
             chrome_options.add_extension(crx_path)
-            print(f"  Loaded adblocker: {crx_path}")
+            log.info(f"Loaded adblocker: {crx_path}")
             return chrome_options
-        print("  Continuing without adblock.")
+        log.warn("Continuing without adblock.")
 
     chrome_options.add_argument("--headless")
     return chrome_options
@@ -578,31 +639,31 @@ def _select_m3u8_urls(m3u8_urls, config, page_url):
             if filtered:
                 dropped = len(urls) - len(filtered)
                 if dropped:
-                    print(f"  m3u8 filter '{pattern}' matched {len(filtered)}/{len(urls)} URLs")
+                    log.info(f"Filter '{pattern}' matched {len(filtered)}/{len(urls)} URLs")
                 urls = filtered
             else:
-                print(f"  WARNING: m3u8 filter '{pattern}' matched nothing, using all {len(urls)} URLs")
+                log.warn(f"Filter '{pattern}' matched nothing — using all {len(urls)} URLs")
         except re.error as e:
-            print(f"  WARNING: invalid m3u8 filter regex '{pattern}': {e}")
+            log.warn(f"Invalid m3u8 filter regex '{pattern}': {e}")
 
     if len(urls) > 1:
-        print(f"  WARNING: {len(urls)} m3u8 URLs found on {page_url}:")
+        log.warn(f"{len(urls)} m3u8 URLs found on {page_url}:")
         for i, u in enumerate(urls, 1):
-            print(f"    [{i}] {u}")
+            log.list_item(i, u)
 
     mode = str(config.get("m3u8_select", "first")).strip().lower()
     if mode == "all":
-        print(f"  Downloading all {len(urls)} m3u8 URLs.")
+        log.info(f"Downloading all {len(urls)} m3u8 URLs")
         return urls
     if mode == "last":
         chosen = urls[-1]
         if len(urls) > 1:
-            print(f"  Using last m3u8: {chosen}")
+            log.info(f"Selected last m3u8: {chosen}")
         return [chosen]
     # default: first
     chosen = urls[0]
     if len(urls) > 1:
-        print(f"  Using first m3u8: {chosen}")
+        log.info(f"Selected first m3u8: {chosen}")
     return [chosen]
 
 
@@ -613,20 +674,20 @@ def _download_m3u8(m3u8_url, effective_config, page_title, output_path_override)
         cmd, outtmpl = _build_system_ytdlp_cmd(
             effective_config, m3u8_url, page_title, output_path_override
         )
-        print(f"Downloading to {outtmpl} (system yt-dlp)...")
+        log.step(f"Downloading {outtmpl} (system yt-dlp)")
         result = subprocess.run(cmd, check=False)
         if result.returncode == 0:
-            print(f"Download completed: {outtmpl}")
+            log.success(f"Completed: {outtmpl}")
         else:
-            print(f"yt-dlp exited with code {result.returncode}")
+            log.error(f"yt-dlp exited with code {result.returncode}")
     else:
         ydl_opts, outtmpl = build_ydl_opts(
             effective_config, page_title, output_path_override
         )
-        print(f"Downloading to {outtmpl}...")
+        log.step(f"Downloading {outtmpl}")
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([m3u8_url])
-        print(f"Download completed: {outtmpl}")
+        log.success(f"Completed: {outtmpl}")
 
 
 def fetch_m3u8_and_download(url, config, output_path_override=None, per_url_overrides=None):
@@ -647,7 +708,7 @@ def fetch_m3u8_and_download(url, config, output_path_override=None, per_url_over
         m3u8_urls, page_title = extract_m3u8(driver, url)
 
         if not m3u8_urls:
-            print("m3u8 URL not found in the page source.")
+            log.warn(f"No m3u8 URL found on {url}")
             return
 
         driver.quit()
@@ -660,11 +721,11 @@ def fetch_m3u8_and_download(url, config, output_path_override=None, per_url_over
         selected = _select_m3u8_urls(m3u8_urls, effective_config, url)
 
         for m3u8_url in selected:
-            print(f"Found m3u8 URL: {m3u8_url}")
+            log.info(f"Found m3u8: {m3u8_url}")
             _download_m3u8(m3u8_url, effective_config, page_title, output_path_override)
 
     except Exception as e:
-        print(f"An error occurred: {e}")
+        log.error(f"An error occurred: {e}")
     finally:
         try:
             driver.quit()
@@ -698,7 +759,7 @@ def _resolve_worker_count(value, num_entries):
         n = int(val)
         return max(1, n)
     except ValueError:
-        print(f"Warning: unrecognised parallel value '{value}', defaulting to all")
+        log.warn(f"Unrecognised parallel value '{value}', defaulting to all")
         return num_entries
 
 
@@ -718,20 +779,22 @@ def download_from_file(file_path, config):
                 url, overrides = _parse_url_line(line, per_url_parser)
                 entries.append((url, overrides))
             except SystemExit:
-                print(f"Warning: could not parse line: {line}")
+                log.warn(f"Could not parse line: {line}")
                 continue
 
         if not entries:
-            print("No URLs found in the file.")
+            log.warn("No URLs found in the file.")
             return
 
         workers = _resolve_worker_count(config.get("parallel"), len(entries))
+        log.header(f"Downloading {len(entries)} URL{'s' if len(entries) != 1 else ''} "
+                   f"with {workers} worker{'s' if workers != 1 else ''}")
 
         if workers <= 1 or len(entries) == 1:
-            for url, overrides in entries:
+            for i, (url, overrides) in enumerate(entries, 1):
+                log.step(f"[{i}/{len(entries)}] {url}")
                 fetch_m3u8_and_download(url, config, per_url_overrides=overrides)
         else:
-            print(f"Downloading {len(entries)} URLs with {workers} parallel workers...")
             with ThreadPoolExecutor(max_workers=workers) as pool:
                 futures = {
                     pool.submit(
@@ -744,12 +807,14 @@ def download_from_file(file_path, config):
                     try:
                         future.result()
                     except Exception as exc:
-                        print(f"Error downloading {src_url}: {exc}")
+                        log.error(f"Failed: {src_url} — {exc}")
+
+        log.header("All done!")
 
     except FileNotFoundError:
-        print(f"Error: File '{file_path}' not found.")
+        log.error(f"File not found: '{file_path}'")
     except Exception as e:
-        print(f"An error occurred while reading the file: {e}")
+        log.error(f"An error occurred while reading the file: {e}")
 
 
 # ---------------------------------------------------------------------------

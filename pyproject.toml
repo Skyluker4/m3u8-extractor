@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68.0", "setuptools-scm>=8.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "m3u8-extractor"
+version = "0.1.0"
+description = "Extract m3u8 URLs from web pages and download with yt-dlp"
+readme = "README.md"
+license = "AGPL-3.0-only"
+requires-python = ">=3.9"
+dependencies = [
+    "selenium>=4.0",
+    "yt-dlp>=2023.1.1",
+    "tomli>=2.0; python_version < '3.11'",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff",
+    "pytest",
+]
+
+[project.scripts]
+m3u8-extractor = "main:main"
+
+[tool.setuptools]
+py-modules = ["main"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]

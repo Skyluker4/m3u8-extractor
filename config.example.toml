@@ -78,6 +78,7 @@
 # audio_only = false                   # Download only the audio stream
 # video_only = false                   # Download only the video stream (no audio)
 # video_and_captions_only = false      # Download video and captions only (no audio)
+# overwrite = true                     # Overwrite existing files (false to skip)
 
 # ── URL rules ────────────────────────────────────────────────────────────────
 # Pattern-matched per-site config. All matching rules are merged in order.

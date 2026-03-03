@@ -280,6 +280,7 @@ DEFAULTS = {
     "audio_only": False,
     "video_only": False,
     "video_and_captions_only": False,
+    "overwrite": True,           # overwrite existing files (set False to skip)
 }
 
 # Map config keys -> environment variable names
@@ -318,13 +319,14 @@ ENV_MAP = {
     "audio_only":               "M3U8_AUDIO_ONLY",
     "video_only":               "M3U8_VIDEO_ONLY",
     "video_and_captions_only":  "M3U8_VIDEO_AND_CAPTIONS_ONLY",
+    "overwrite":                "M3U8_OVERWRITE",
 }
 
 BOOL_KEYS = {
     "use_base_url_as_referrer", "use_system_ytdlp", "adblock",
     "ignore_ssl_errors", "thumbnail", "thumbnail_only",
     "captions", "captions_only", "audio_only", "video_only",
-    "video_and_captions_only",
+    "video_and_captions_only", "overwrite",
 }
 
 
@@ -502,6 +504,10 @@ def build_arg_parser():
                       help="Download only the video stream (no audio)")
     mode.add_argument("--video-and-captions-only", action="store_true", default=None,
                       help="Download video and captions only (no audio)")
+    mode.add_argument("--overwrite", action="store_true", default=None,
+                      help="Overwrite existing files (default)")
+    mode.add_argument("--no-overwrite", action="store_true", default=None,
+                      help="Skip download if the output file already exists")
 
     p.add_argument("-c", "--config",
                    help="Path to TOML config file "
@@ -558,6 +564,13 @@ def load_cli_config(args_ns):
     for key, val in mapping.items():
         if val is not None:
             cfg[key] = val
+
+    # Handle --overwrite / --no-overwrite pair
+    if getattr(args_ns, "no_overwrite", None):
+        cfg["overwrite"] = False
+    elif getattr(args_ns, "overwrite", None):
+        cfg["overwrite"] = True
+
     return cfg
 
 
@@ -607,7 +620,16 @@ def _build_per_url_parser():
     p.add_argument("--audio-only", action="store_true", default=None)
     p.add_argument("--video-only", action="store_true", default=None)
     p.add_argument("--video-and-captions-only", action="store_true", default=None)
+    p.add_argument("--overwrite", action="store_true", default=None)
+    p.add_argument("--no-overwrite", action="store_true", default=None)
     return p
+
+
+def _normalise_overrides(overrides):
+    """Convert negated flags (e.g. no_overwrite) into their canonical form."""
+    if overrides.pop("no_overwrite", None):
+        overrides["overwrite"] = False
+    return overrides
 
 
 def _parse_url_line(line, per_url_parser):
@@ -631,7 +653,7 @@ def _parse_url_line(line, per_url_parser):
             if key == "url" or val is None:
                 continue
             overrides[key] = val
-        return url, overrides
+        return url, _normalise_overrides(overrides)
 
     # Legacy format: URL [optional title/path]
     url = tokens[0]
@@ -657,7 +679,7 @@ def _parse_group_directive(line, per_url_parser):
             if key == "url" or val is None:
                 continue
             overrides[key] = val
-        return overrides
+        return _normalise_overrides(overrides)
     except SystemExit:
         log.warn(f"Could not parse group directive: {line}")
         return {}
@@ -803,6 +825,10 @@ def build_ydl_opts(config, title, output_path_override=None):
     if config.get("ignore_ssl_errors"):
         opts["nocheckcertificate"] = True
 
+    # Overwrite
+    if not config.get("overwrite", True):
+        opts["nooverwrites"] = True
+
     # Progress tracking (when running in batch/parallel mode)
     tracker = _tracker
     if tracker is not None:
@@ -882,6 +908,10 @@ def _build_system_ytdlp_cmd(config, m3u8_url, title, output_path_override=None):
     # SSL
     if config.get("ignore_ssl_errors"):
         cmd.append("--no-check-certificates")
+
+    # Overwrite
+    if not config.get("overwrite", True):
+        cmd.append("--no-overwrites")
 
     cmd.append(m3u8_url)
     return cmd, outtmpl

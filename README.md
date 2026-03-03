@@ -86,6 +86,8 @@ If no URL is given and `--watch` is not set, URLs are read from a file (`urls.tx
 | `--audio-only`              | Download only the audio stream            |
 | `--video-only`              | Download only the video stream (no audio) |
 | `--video-and-captions-only` | Download video and captions (no audio)    |
+| `--overwrite`               | Overwrite existing files (default)        |
+| `--no-overwrite`            | Skip download if output file exists       |
 
 ### yt-dlp binary
 

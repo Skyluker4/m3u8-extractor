@@ -281,6 +281,7 @@ DEFAULTS = {
     "video_only": False,
     "video_and_captions_only": False,
     "overwrite": True,           # overwrite existing files (set False to skip)
+    "ytdlp_args": None,           # extra raw arguments forwarded to yt-dlp
 }
 
 # Map config keys -> environment variable names
@@ -320,6 +321,7 @@ ENV_MAP = {
     "video_only":               "M3U8_VIDEO_ONLY",
     "video_and_captions_only":  "M3U8_VIDEO_AND_CAPTIONS_ONLY",
     "overwrite":                "M3U8_OVERWRITE",
+    "ytdlp_args":               "M3U8_YTDLP_ARGS",
 }
 
 BOOL_KEYS = {
@@ -509,6 +511,10 @@ def build_arg_parser():
     mode.add_argument("--no-overwrite", action="store_true", default=None,
                       help="Skip download if the output file already exists")
 
+    p.add_argument("--ytdlp-args",
+                   help="Extra raw arguments forwarded to yt-dlp "
+                        "(e.g. '--limit-rate 1M --retries 10')")
+
     p.add_argument("-c", "--config",
                    help="Path to TOML config file "
                         "(default: ./config.toml or ~/.config/m3u8-extractor/config.toml)")
@@ -560,6 +566,7 @@ def load_cli_config(args_ns):
         "audio_only": args_ns.audio_only,
         "video_only": args_ns.video_only,
         "video_and_captions_only": args_ns.video_and_captions_only,
+        "ytdlp_args": args_ns.ytdlp_args,
     }
     for key, val in mapping.items():
         if val is not None:
@@ -622,6 +629,7 @@ def _build_per_url_parser():
     p.add_argument("--video-and-captions-only", action="store_true", default=None)
     p.add_argument("--overwrite", action="store_true", default=None)
     p.add_argument("--no-overwrite", action="store_true", default=None)
+    p.add_argument("--ytdlp-args")
     return p
 
 
@@ -829,6 +837,18 @@ def build_ydl_opts(config, title, output_path_override=None):
     if not config.get("overwrite", True):
         opts["nooverwrites"] = True
 
+    # Extra yt-dlp arguments (library mode: parse CLI flags into opts dict)
+    ytdlp_args = config.get("ytdlp_args")
+    if ytdlp_args:
+        extra_tokens = shlex.split(ytdlp_args) if isinstance(ytdlp_args, str) else list(ytdlp_args)
+        try:
+            _, _, _, extra_opts = yt_dlp.parse_options(extra_tokens)
+            # Don't let extra args clobber our explicit output template
+            extra_opts.pop("outtmpl", None)
+            opts.update(extra_opts)
+        except Exception as e:
+            log.warn(f"Could not parse ytdlp_args for library mode: {e}")
+
     # Progress tracking (when running in batch/parallel mode)
     tracker = _tracker
     if tracker is not None:
@@ -912,6 +932,12 @@ def _build_system_ytdlp_cmd(config, m3u8_url, title, output_path_override=None):
     # Overwrite
     if not config.get("overwrite", True):
         cmd.append("--no-overwrites")
+
+    # Extra yt-dlp arguments (system mode: splice raw tokens before the URL)
+    ytdlp_args = config.get("ytdlp_args")
+    if ytdlp_args:
+        extra_tokens = shlex.split(ytdlp_args) if isinstance(ytdlp_args, str) else list(ytdlp_args)
+        cmd.extend(extra_tokens)
 
     cmd.append(m3u8_url)
     return cmd, outtmpl

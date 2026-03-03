@@ -95,6 +95,7 @@ If no URL is given and `--watch` is not set, URLs are read from a file (`urls.tx
 | -------------------- | ------------------------------------------------------------ |
 | `--use-system-ytdlp` | Use the system `yt-dlp` binary instead of the Python library |
 | `--yt-dlp-path`      | Path to a specific yt-dlp binary                             |
+| `--ytdlp-args`       | Extra raw arguments forwarded to yt-dlp (e.g. `'--limit-rate 1M'`) |
 
 ### Parallelism
 

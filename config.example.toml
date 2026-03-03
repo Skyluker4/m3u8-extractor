@@ -45,6 +45,7 @@
 
 # use_system_ytdlp = false             # Use the system yt-dlp binary instead of Python lib
 # yt_dlp_path = "/usr/local/bin/yt-dlp"  # Path to a specific yt-dlp binary
+# ytdlp_args = "--limit-rate 1M --retries 10"  # Extra raw arguments for yt-dlp
 
 # ── Extractor ────────────────────────────────────────────────────────────────
 

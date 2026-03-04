@@ -22,10 +22,10 @@ dev = [
 ]
 
 [project.scripts]
-m3u8-extractor = "main:main"
+m3u8-extractor = "m3u8_extractor:main"
 
 [tool.setuptools]
-py-modules = ["main"]
+py-modules = ["m3u8_extractor"]
 
 [tool.ruff]
 line-length = 100

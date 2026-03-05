@@ -1,5 +1,5 @@
 ---
-name: Build & Publish to PyPI
+name: Build & Publish
 
 on:
   push:
@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   build:
-    name: Build distribution
+    name: Build
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -80,7 +80,7 @@ jobs:
           generate_release_notes: true
 
   dev-release:
-    name: Development Build
+    name: Create GitHub Pre-Release
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     needs: build
     runs-on: ubuntu-24.04

@@ -1,3 +1,4 @@
+---
 name: Super-Linter
 
 on:
@@ -13,11 +14,20 @@ jobs:
     name: Lint code base
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           fetch-depth: 0
-      - uses: super-linter/super-linter@61abc07d755095a68f4987d1c2c3d1d64408f1f9  # v8.5.0
+          persist-credentials: false
+      - uses: super-linter/super-linter@61abc07d755095a68f4987d1c2c3d1d64408f1f9 # v8.5.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DEFAULT_BRANCH: main
           VALIDATE_ALL_CODEBASE: true
+          # Use Ruff for Python linting and formatting (passes cleanly).
+          # Disable redundant/conflicting Python linters.
+          VALIDATE_PYTHON_BLACK: false
+          VALIDATE_PYTHON_PYLINT: false
+          VALIDATE_PYTHON_FLAKE8: false
+          VALIDATE_PYTHON_ISORT: false
+          # Exclude virtual-env and cache dirs that may exist locally.
+          FILTER_REGEX_EXCLUDE: '(\.venv/|\.mypy_cache/|__pycache__/)'

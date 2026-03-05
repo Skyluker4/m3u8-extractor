@@ -22,5 +22,8 @@ indent_size = 2
 indent_style = space
 indent_size = 4
 
+[LICENSE]
+indent_style = unset
+
 [Makefile]
 indent_style = tab

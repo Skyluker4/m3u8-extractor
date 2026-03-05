@@ -1,20 +1,21 @@
 #!/usr/bin/env python3
 
-import os
-import sys
-import time
-import re
+import argparse
 import json
+import os
+import re
 import shlex
 import shutil
-import argparse
 import subprocess
+import sys
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from urllib.parse import urljoin, urlparse
+
+import yt_dlp
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
-import yt_dlp
-from urllib.parse import urljoin, urlparse
 
 if sys.version_info >= (3, 11):
     import tomllib
@@ -41,12 +42,12 @@ class _ProgressTracker:
         self.failed = 0
         self.bytes_downloaded = 0
         self.bytes_total_known = 0  # sum of known totals from yt-dlp
-        self._active_totals = {}     # url -> total_bytes for current download
-        self._active_downloaded = {} # url -> downloaded_bytes for current download
-        self._active_info = {}       # url -> dict with per-download display info
-        self._prev_bytes = 0         # for speed calculation
-        self._prev_time = 0.0        # for speed calculation
-        self._speed = 0.0            # smoothed bytes/sec
+        self._active_totals = {}  # url -> total_bytes for current download
+        self._active_downloaded = {}  # url -> downloaded_bytes for current download
+        self._active_info = {}  # url -> dict with per-download display info
+        self._prev_bytes = 0  # for speed calculation
+        self._prev_time = 0.0  # for speed calculation
+        self._speed = 0.0  # smoothed bytes/sec
         self._speed_unit = str(speed_unit).strip().lower()  # "bytes" or "bits"
         self._max_active = max(1, int(max_active))
         self._reserved_lines = 1 + self._max_active  # download lines + summary bar
@@ -256,13 +257,15 @@ class _ProgressTracker:
             ]
             if self.failed:
                 status_parts.append(f"\033[91m{self.failed}\033[0m fail")
-            status_parts.extend([
-                f"{self.remaining} left",
-                f"{self._format_bytes(total_downloaded)}",
-                speed_str,
-                f"{self._format_time(elapsed)}",
-                f"ETA {eta}",
-            ])
+            status_parts.extend(
+                [
+                    f"{self.remaining} left",
+                    f"{self._format_bytes(total_downloaded)}",
+                    speed_str,
+                    f"{self._format_time(elapsed)}",
+                    f"ETA {eta}",
+                ]
+            )
             summary_line = " │ ".join(status_parts)
 
             # Build per-download progress lines
@@ -304,14 +307,14 @@ _tracker = None
 class _Style:
     """ANSI escape helpers — degrades gracefully when not a TTY."""
 
-    RESET  = "\033[0m"
-    BOLD   = "\033[1m"
-    DIM    = "\033[2m"
-    RED    = "\033[91m"
-    GREEN  = "\033[92m"
+    RESET = "\033[0m"
+    BOLD = "\033[1m"
+    DIM = "\033[2m"
+    RED = "\033[91m"
+    GREEN = "\033[92m"
     YELLOW = "\033[93m"
-    BLUE   = "\033[94m"
-    CYAN   = "\033[96m"
+    BLUE = "\033[94m"
+    CYAN = "\033[96m"
 
     _enabled = hasattr(sys.stdout, "isatty") and sys.stdout.isatty()
 
@@ -411,87 +414,95 @@ DEFAULTS = {
     "referrer": None,
     "use_base_url_as_referrer": False,
     "cookies": None,
-    "headers": None,              # custom HTTP headers (list or dict)
-    "auth": None,                 # HTTP basic auth "user:pass"
+    "headers": None,  # custom HTTP headers (list or dict)
+    "auth": None,  # HTTP basic auth "user:pass"
     "quality": None,
     "transcode": None,
-    "yt_dlp_path": None,         # custom path to yt-dlp binary
-    "use_system_ytdlp": False,   # use system yt-dlp instead of Python library
-    "parallel": "all",           # "all", number, "cores", "logical_cores"
-    "m3u8_select": "first",       # "first", "last", "all", or "interactive"
-    "m3u8_filter": None,          # regex pattern to filter m3u8 URLs
-    "video_filter": None,         # regex pattern to filter direct video URLs
-    "stream_type": "both",        # "both", "m3u8", or "video"
-    "adblock": False,             # load an adblocker extension in Chrome
-    "adblock_extension": None,    # path to a custom .crx adblocker extension
+    "yt_dlp_path": None,  # custom path to yt-dlp binary
+    "use_system_ytdlp": False,  # use system yt-dlp instead of Python library
+    "parallel": "all",  # "all", number, "cores", "logical_cores"
+    "m3u8_select": "first",  # "first", "last", "all", or "interactive"
+    "m3u8_filter": None,  # regex pattern to filter m3u8 URLs
+    "video_filter": None,  # regex pattern to filter direct video URLs
+    "stream_type": "both",  # "both", "m3u8", or "video"
+    "adblock": False,  # load an adblocker extension in Chrome
+    "adblock_extension": None,  # path to a custom .crx adblocker extension
     "adblock_strictness": "complete",  # "basic", "optimal", or "complete"
-    "proxy": None,                # proxy for yt-dlp downloads (e.g. socks5://127.0.0.1:1080)
-    "browser_proxy": None,        # proxy for the Selenium browser
-    "ignore_ssl_errors": False,   # ignore SSL certificate errors
-    "user_agent": None,           # custom User-Agent string for requests and browser
-    "localstorage": None,           # localStorage key=value pairs to set before page load
-    "extractor": "auto",            # "auto", "ytdlp", or "m3u8"
-    "extractors": None,             # comma-separated allowlist of yt-dlp extractors
+    "proxy": None,  # proxy for yt-dlp downloads (e.g. socks5://127.0.0.1:1080)
+    "browser_proxy": None,  # proxy for the Selenium browser
+    "ignore_ssl_errors": False,  # ignore SSL certificate errors
+    "user_agent": None,  # custom User-Agent string for requests and browser
+    "localstorage": None,  # localStorage key=value pairs to set before page load
+    "extractor": "auto",  # "auto", "ytdlp", or "m3u8"
+    "extractors": None,  # comma-separated allowlist of yt-dlp extractors
     # Download-mode flags (all False = default yt-dlp behaviour)
-    "thumbnail": False,          # download thumbnail alongside video
+    "thumbnail": False,  # download thumbnail alongside video
     "thumbnail_only": False,
-    "captions": False,           # download captions alongside video
+    "captions": False,  # download captions alongside video
     "captions_only": False,
     "audio_only": False,
     "video_only": False,
     "video_and_captions_only": False,
-    "overwrite": True,           # overwrite existing files (set False to skip)
-    "ytdlp_args": None,           # extra raw arguments forwarded to yt-dlp
-    "speed_unit": "bytes",         # "bytes" (KB/s, MB/s) or "bits" (Kbps, Mbps)
+    "overwrite": True,  # overwrite existing files (set False to skip)
+    "ytdlp_args": None,  # extra raw arguments forwarded to yt-dlp
+    "speed_unit": "bytes",  # "bytes" (KB/s, MB/s) or "bits" (Kbps, Mbps)
 }
 
 # Map config keys -> environment variable names
 ENV_MAP = {
-    "urls_file":                "M3U8_URLS_FILE",
-    "output_path":              "M3U8_OUTPUT_PATH",
-    "title_prefix":             "M3U8_TITLE_PREFIX",
-    "title_postfix":            "M3U8_TITLE_POSTFIX",
-    "referrer":                 "M3U8_REFERRER",
+    "urls_file": "M3U8_URLS_FILE",
+    "output_path": "M3U8_OUTPUT_PATH",
+    "title_prefix": "M3U8_TITLE_PREFIX",
+    "title_postfix": "M3U8_TITLE_POSTFIX",
+    "referrer": "M3U8_REFERRER",
     "use_base_url_as_referrer": "M3U8_USE_BASE_URL_AS_REFERRER",
-    "cookies":                  "M3U8_COOKIES",
-    "headers":                  "M3U8_HEADERS",
-    "auth":                     "M3U8_AUTH",
-    "quality":                  "M3U8_QUALITY",
-    "transcode":                "M3U8_TRANSCODE",
-    "yt_dlp_path":              "M3U8_YT_DLP_PATH",
-    "use_system_ytdlp":         "M3U8_USE_SYSTEM_YTDLP",
-    "parallel":                  "M3U8_PARALLEL",
-    "m3u8_select":               "M3U8_SELECT",
-    "m3u8_filter":               "M3U8_FILTER",
-    "video_filter":              "M3U8_VIDEO_FILTER",
-    "stream_type":               "M3U8_STREAM_TYPE",
-    "adblock":                   "M3U8_ADBLOCK",
-    "adblock_extension":         "M3U8_ADBLOCK_EXTENSION",
-    "adblock_strictness":        "M3U8_ADBLOCK_STRICTNESS",
-    "proxy":                     "M3U8_PROXY",
-    "browser_proxy":             "M3U8_BROWSER_PROXY",
-    "ignore_ssl_errors":         "M3U8_IGNORE_SSL_ERRORS",
-    "user_agent":                "M3U8_USER_AGENT",
-    "localstorage":              "M3U8_LOCALSTORAGE",
-    "extractor":                 "M3U8_EXTRACTOR",
-    "extractors":                "M3U8_EXTRACTORS",
-    "thumbnail":                "M3U8_THUMBNAIL",
-    "thumbnail_only":           "M3U8_THUMBNAIL_ONLY",
-    "captions":                 "M3U8_CAPTIONS",
-    "captions_only":            "M3U8_CAPTIONS_ONLY",
-    "audio_only":               "M3U8_AUDIO_ONLY",
-    "video_only":               "M3U8_VIDEO_ONLY",
-    "video_and_captions_only":  "M3U8_VIDEO_AND_CAPTIONS_ONLY",
-    "overwrite":                "M3U8_OVERWRITE",
-    "ytdlp_args":               "M3U8_YTDLP_ARGS",
-    "speed_unit":               "M3U8_SPEED_UNIT",
+    "cookies": "M3U8_COOKIES",
+    "headers": "M3U8_HEADERS",
+    "auth": "M3U8_AUTH",
+    "quality": "M3U8_QUALITY",
+    "transcode": "M3U8_TRANSCODE",
+    "yt_dlp_path": "M3U8_YT_DLP_PATH",
+    "use_system_ytdlp": "M3U8_USE_SYSTEM_YTDLP",
+    "parallel": "M3U8_PARALLEL",
+    "m3u8_select": "M3U8_SELECT",
+    "m3u8_filter": "M3U8_FILTER",
+    "video_filter": "M3U8_VIDEO_FILTER",
+    "stream_type": "M3U8_STREAM_TYPE",
+    "adblock": "M3U8_ADBLOCK",
+    "adblock_extension": "M3U8_ADBLOCK_EXTENSION",
+    "adblock_strictness": "M3U8_ADBLOCK_STRICTNESS",
+    "proxy": "M3U8_PROXY",
+    "browser_proxy": "M3U8_BROWSER_PROXY",
+    "ignore_ssl_errors": "M3U8_IGNORE_SSL_ERRORS",
+    "user_agent": "M3U8_USER_AGENT",
+    "localstorage": "M3U8_LOCALSTORAGE",
+    "extractor": "M3U8_EXTRACTOR",
+    "extractors": "M3U8_EXTRACTORS",
+    "thumbnail": "M3U8_THUMBNAIL",
+    "thumbnail_only": "M3U8_THUMBNAIL_ONLY",
+    "captions": "M3U8_CAPTIONS",
+    "captions_only": "M3U8_CAPTIONS_ONLY",
+    "audio_only": "M3U8_AUDIO_ONLY",
+    "video_only": "M3U8_VIDEO_ONLY",
+    "video_and_captions_only": "M3U8_VIDEO_AND_CAPTIONS_ONLY",
+    "overwrite": "M3U8_OVERWRITE",
+    "ytdlp_args": "M3U8_YTDLP_ARGS",
+    "speed_unit": "M3U8_SPEED_UNIT",
 }
 
 BOOL_KEYS = {
-    "use_base_url_as_referrer", "use_system_ytdlp", "adblock",
-    "ignore_ssl_errors", "thumbnail", "thumbnail_only",
-    "captions", "captions_only", "audio_only", "video_only",
-    "video_and_captions_only", "overwrite",
+    "use_base_url_as_referrer",
+    "use_system_ytdlp",
+    "adblock",
+    "ignore_ssl_errors",
+    "thumbnail",
+    "thumbnail_only",
+    "captions",
+    "captions_only",
+    "audio_only",
+    "video_only",
+    "video_and_captions_only",
+    "overwrite",
 }
 
 
@@ -562,136 +573,213 @@ def build_arg_parser():
         epilog="Licensed under the GNU Affero General Public License v3.0 only (AGPL-3.0-only).",
     )
 
-    p.add_argument("url", nargs="?", default=None,
-                   help="URL to download directly (for one-off downloads)")
-    p.add_argument("-f", "--urls-file",
-                   help="Path to file containing URLs "
-                        "(default: ./urls.txt or ~/.config/m3u8-extractor/urls.txt)")
-    p.add_argument("-o", "--output-path",
-                   help="Default output directory or filename template")
-    p.add_argument("--title-prefix",
-                   help="String to prepend to every output filename")
-    p.add_argument("--title-postfix",
-                   help="String to append to every output filename (before extension)")
-    p.add_argument("--referrer",
-                   help="Referer header to send with requests")
-    p.add_argument("--use-base-url-as-referrer", action="store_true", default=None,
-                   help="Automatically use each page URL as the Referer header")
-    p.add_argument("--cookies",
-                   help="Path to a Netscape-format cookies file")
-    p.add_argument("--user-agent",
-                   help="Custom User-Agent string for yt-dlp and browser requests")
-    p.add_argument("--header", action="append", metavar="NAME=VALUE",
-                   help="Custom HTTP header (repeatable, e.g. --header 'X-Token=abc')")
-    p.add_argument("--auth", metavar="USER:PASS",
-                   help="HTTP basic auth credentials (e.g. 'user:password')")
-    p.add_argument("-q", "--quality",
-                   help="yt-dlp format / quality selector (e.g. 'bestvideo+bestaudio')")
-    p.add_argument("--transcode",
-                   help="Transcode to this format after download (e.g. mp4, mkv)")
+    p.add_argument(
+        "url", nargs="?", default=None, help="URL to download directly (for one-off downloads)"
+    )
+    p.add_argument(
+        "-f",
+        "--urls-file",
+        help="Path to file containing URLs "
+        "(default: ./urls.txt or ~/.config/m3u8-extractor/urls.txt)",
+    )
+    p.add_argument("-o", "--output-path", help="Default output directory or filename template")
+    p.add_argument("--title-prefix", help="String to prepend to every output filename")
+    p.add_argument(
+        "--title-postfix", help="String to append to every output filename (before extension)"
+    )
+    p.add_argument("--referrer", help="Referer header to send with requests")
+    p.add_argument(
+        "--use-base-url-as-referrer",
+        action="store_true",
+        default=None,
+        help="Automatically use each page URL as the Referer header",
+    )
+    p.add_argument("--cookies", help="Path to a Netscape-format cookies file")
+    p.add_argument("--user-agent", help="Custom User-Agent string for yt-dlp and browser requests")
+    p.add_argument(
+        "--header",
+        action="append",
+        metavar="NAME=VALUE",
+        help="Custom HTTP header (repeatable, e.g. --header 'X-Token=abc')",
+    )
+    p.add_argument(
+        "--auth", metavar="USER:PASS", help="HTTP basic auth credentials (e.g. 'user:password')"
+    )
+    p.add_argument(
+        "-q", "--quality", help="yt-dlp format / quality selector (e.g. 'bestvideo+bestaudio')"
+    )
+    p.add_argument("--transcode", help="Transcode to this format after download (e.g. mp4, mkv)")
 
     # yt-dlp binary options
     ydlp = p.add_argument_group("yt-dlp binary")
-    ydlp.add_argument("--use-system-ytdlp", action="store_true", default=None,
-                      help="Use the system yt-dlp binary instead of the Python library")
-    ydlp.add_argument("--yt-dlp-path",
-                      help="Path to a specific yt-dlp binary")
+    ydlp.add_argument(
+        "--use-system-ytdlp",
+        action="store_true",
+        default=None,
+        help="Use the system yt-dlp binary instead of the Python library",
+    )
+    ydlp.add_argument("--yt-dlp-path", help="Path to a specific yt-dlp binary")
 
     # Parallelism
     par = p.add_argument_group("parallelism")
-    par.add_argument("-p", "--parallel",
-                     help="Number of parallel downloads: a number, 'all' (default), "
-                          "'cores' (physical CPU cores), or 'logical_cores'")
-    par.add_argument("--speed-unit",
-                     help="Speed display unit in progress bar: 'bytes' (default, e.g. MB/s) "
-                          "or 'bits' (e.g. Mbps)")
+    par.add_argument(
+        "-p",
+        "--parallel",
+        help="Number of parallel downloads: a number, 'all' (default), "
+        "'cores' (physical CPU cores), or 'logical_cores'",
+    )
+    par.add_argument(
+        "--speed-unit",
+        help="Speed display unit in progress bar: 'bytes' (default, e.g. MB/s) "
+        "or 'bits' (e.g. Mbps)",
+    )
 
     # m3u8 / video selection
     m3u8 = p.add_argument_group("stream selection")
-    m3u8.add_argument("--stream-type",
-                      help="Which stream types to look for: "
-                           "'both' (default), 'm3u8' (only m3u8), or 'video' (only direct files)")
-    m3u8.add_argument("--m3u8-select",
-                      help="Which stream to download when multiple are found: "
-                           "'first' (default), 'last', 'all', or 'interactive'")
-    m3u8.add_argument("--m3u8-filter",
-                      help="Regex pattern to filter m3u8 URLs (applied before selection)")
-    m3u8.add_argument("--video-filter",
-                      help="Regex pattern to filter direct video URLs (applied before selection)")
+    m3u8.add_argument(
+        "--stream-type",
+        help="Which stream types to look for: "
+        "'both' (default), 'm3u8' (only m3u8), or 'video' (only direct files)",
+    )
+    m3u8.add_argument(
+        "--m3u8-select",
+        help="Which stream to download when multiple are found: "
+        "'first' (default), 'last', 'all', or 'interactive'",
+    )
+    m3u8.add_argument(
+        "--m3u8-filter", help="Regex pattern to filter m3u8 URLs (applied before selection)"
+    )
+    m3u8.add_argument(
+        "--video-filter",
+        help="Regex pattern to filter direct video URLs (applied before selection)",
+    )
 
     # Adblock
     adb = p.add_argument_group("adblock")
-    adb.add_argument("--adblock", action="store_true", default=None,
-                     help="Load an adblocker extension in Chrome "
-                          "(uses bundled uBlock Origin Lite by default)")
-    adb.add_argument("--adblock-strictness",
-                     help="Filtering strictness for the built-in adblocker: "
-                          "'basic', 'optimal', or 'complete' (default)")
-    adb.add_argument("--adblock-extension",
-                     help="Path to a custom .crx adblocker extension file")
+    adb.add_argument(
+        "--adblock",
+        action="store_true",
+        default=None,
+        help="Load an adblocker extension in Chrome (uses bundled uBlock Origin Lite by default)",
+    )
+    adb.add_argument(
+        "--adblock-strictness",
+        help="Filtering strictness for the built-in adblocker: "
+        "'basic', 'optimal', or 'complete' (default)",
+    )
+    adb.add_argument("--adblock-extension", help="Path to a custom .crx adblocker extension file")
 
     # Proxy
     prx = p.add_argument_group("proxy")
-    prx.add_argument("--proxy",
-                     help="Proxy for yt-dlp downloads "
-                          "(e.g. http://host:port, socks5://host:port)")
-    prx.add_argument("--browser-proxy",
-                     help="Proxy for the Selenium browser "
-                          "(defaults to --proxy if not set)")
+    prx.add_argument(
+        "--proxy", help="Proxy for yt-dlp downloads (e.g. http://host:port, socks5://host:port)"
+    )
+    prx.add_argument(
+        "--browser-proxy", help="Proxy for the Selenium browser (defaults to --proxy if not set)"
+    )
 
     # SSL
-    p.add_argument("--ignore-ssl-errors", action="store_true", default=None,
-                   help="Ignore SSL certificate errors in both the browser and yt-dlp")
+    p.add_argument(
+        "--ignore-ssl-errors",
+        action="store_true",
+        default=None,
+        help="Ignore SSL certificate errors in both the browser and yt-dlp",
+    )
 
     # localStorage
-    p.add_argument("--localstorage", action="append", metavar="KEY=VALUE",
-                   help="Set a localStorage entry before page load "
-                        "(repeatable, e.g. --localstorage 'jwplayer.qualityLabel=HQ')")
+    p.add_argument(
+        "--localstorage",
+        action="append",
+        metavar="KEY=VALUE",
+        help="Set a localStorage entry before page load "
+        "(repeatable, e.g. --localstorage 'jwplayer.qualityLabel=HQ')",
+    )
 
     # Extractor selection
     ext = p.add_argument_group("extractor")
-    ext.add_argument("--extractor",
-                     help="Extraction strategy: 'auto' (default, try yt-dlp native first "
-                          "then fall back to m3u8), 'ytdlp' (yt-dlp only), "
-                          "or 'm3u8' (Selenium m3u8 only)")
-    ext.add_argument("--extractors",
-                     help="Comma-separated allowlist of yt-dlp extractor names "
-                          "(e.g. 'youtube,vimeo'). Only used with 'auto' or 'ytdlp' mode")
+    ext.add_argument(
+        "--extractor",
+        help="Extraction strategy: 'auto' (default, try yt-dlp native first "
+        "then fall back to m3u8), 'ytdlp' (yt-dlp only), "
+        "or 'm3u8' (Selenium m3u8 only)",
+    )
+    ext.add_argument(
+        "--extractors",
+        help="Comma-separated allowlist of yt-dlp extractor names "
+        "(e.g. 'youtube,vimeo'). Only used with 'auto' or 'ytdlp' mode",
+    )
 
     # Download-mode flags
     mode = p.add_argument_group("download mode")
-    mode.add_argument("--thumbnail", action="store_true", default=None,
-                      help="Download the thumbnail alongside the video")
-    mode.add_argument("--thumbnail-only", action="store_true", default=None,
-                      help="Download only the thumbnail")
-    mode.add_argument("--captions", action="store_true", default=None,
-                      help="Download captions alongside the video")
-    mode.add_argument("--captions-only", action="store_true", default=None,
-                      help="Download only the captions")
-    mode.add_argument("--audio-only", action="store_true", default=None,
-                      help="Download only the audio stream")
-    mode.add_argument("--video-only", action="store_true", default=None,
-                      help="Download only the video stream (no audio)")
-    mode.add_argument("--video-and-captions-only", action="store_true", default=None,
-                      help="Download video and captions only (no audio)")
-    mode.add_argument("--overwrite", action="store_true", default=None,
-                      help="Overwrite existing files (default)")
-    mode.add_argument("--no-overwrite", action="store_true", default=None,
-                      help="Skip download if the output file already exists")
+    mode.add_argument(
+        "--thumbnail",
+        action="store_true",
+        default=None,
+        help="Download the thumbnail alongside the video",
+    )
+    mode.add_argument(
+        "--thumbnail-only", action="store_true", default=None, help="Download only the thumbnail"
+    )
+    mode.add_argument(
+        "--captions",
+        action="store_true",
+        default=None,
+        help="Download captions alongside the video",
+    )
+    mode.add_argument(
+        "--captions-only", action="store_true", default=None, help="Download only the captions"
+    )
+    mode.add_argument(
+        "--audio-only", action="store_true", default=None, help="Download only the audio stream"
+    )
+    mode.add_argument(
+        "--video-only",
+        action="store_true",
+        default=None,
+        help="Download only the video stream (no audio)",
+    )
+    mode.add_argument(
+        "--video-and-captions-only",
+        action="store_true",
+        default=None,
+        help="Download video and captions only (no audio)",
+    )
+    mode.add_argument(
+        "--overwrite", action="store_true", default=None, help="Overwrite existing files (default)"
+    )
+    mode.add_argument(
+        "--no-overwrite",
+        action="store_true",
+        default=None,
+        help="Skip download if the output file already exists",
+    )
 
-    p.add_argument("--ytdlp-args",
-                   help="Extra raw arguments forwarded to yt-dlp "
-                        "(e.g. '--limit-rate 1M --retries 10')")
+    p.add_argument(
+        "--ytdlp-args",
+        help="Extra raw arguments forwarded to yt-dlp (e.g. '--limit-rate 1M --retries 10')",
+    )
 
-    p.add_argument("-c", "--config",
-                   help="Path to TOML config file "
-                        "(default: ./config.toml or ~/.config/m3u8-extractor/config.toml)")
+    p.add_argument(
+        "-c",
+        "--config",
+        help="Path to TOML config file "
+        "(default: ./config.toml or ~/.config/m3u8-extractor/config.toml)",
+    )
 
     # Watch mode
-    p.add_argument("-w", "--watch", action="store_true", default=False,
-                   help="Watch the clipboard for URLs and download automatically")
-    p.add_argument("--watch-interval", type=float, default=1.0,
-                   help="Clipboard polling interval in seconds (default: 1.0)")
+    p.add_argument(
+        "-w",
+        "--watch",
+        action="store_true",
+        default=False,
+        help="Watch the clipboard for URLs and download automatically",
+    )
+    p.add_argument(
+        "--watch-interval",
+        type=float,
+        default=1.0,
+        help="Clipboard polling interval in seconds (default: 1.0)",
+    )
 
     return p
 
@@ -816,9 +904,9 @@ def _parse_url_line(line, per_url_parser):
     """Parse a single line from the URLs file.
 
     Supports three formats:
-      1. URL
-      2. URL title-or-path           (legacy: no -- flags)
-      3. URL [--flag ...] [-o path]  (rich: any per-URL option)
+        1. URL
+        2. URL title-or-path           (legacy: no -- flags)
+        3. URL [--flag ...] [-o path]  (rich: any per-URL option)
 
     Returns (url, per_url_overrides_dict).
     """
@@ -896,12 +984,12 @@ def _match_url_rules(url, url_rules):
 def _sanitise_title(title):
     """Remove or replace characters that are illegal in filenames."""
     # Replace path separators and other problematic chars with a dash
-    title = re.sub(r'[/\\]', ' - ', title)
+    title = re.sub(r"[/\\]", " - ", title)
     # Remove characters illegal on Windows/Linux/macOS: : * ? " < > |
-    title = re.sub(r'[:\*\?"<>|]', '', title)
+    title = re.sub(r'[:\*\?"<>|]', "", title)
     # Collapse multiple spaces/dashes
-    title = re.sub(r'\s{2,}', ' ', title).strip()
-    title = re.sub(r'-{2,}', '-', title).strip(' -')
+    title = re.sub(r"\s{2,}", " ", title).strip()
+    title = re.sub(r"-{2,}", "-", title).strip(" -")
     return title or "video"
 
 
@@ -969,9 +1057,7 @@ def build_ydl_opts(config, title, output_path_override=None):
     # Transcoding (post-processor)
     transcode = config.get("transcode")
     if transcode:
-        opts["postprocessors"] = [
-            {"key": "FFmpegVideoConvertor", "preferedformat": transcode}
-        ]
+        opts["postprocessors"] = [{"key": "FFmpegVideoConvertor", "preferedformat": transcode}]
 
     # Referrer
     referrer = config.get("referrer")
@@ -1030,6 +1116,7 @@ def build_ydl_opts(config, title, output_path_override=None):
     tracker = _tracker
     if tracker is not None:
         src_url = config.get("_tracker_url", "")
+
         def _progress_hook(d, _url=src_url, _t=tracker):
             dl_bytes = d.get("downloaded_bytes", 0)
             total = d.get("total_bytes") or d.get("total_bytes_estimate")
@@ -1045,6 +1132,7 @@ def build_ydl_opts(config, title, output_path_override=None):
                 _t.draw_bar()
             elif d.get("status") == "finished":
                 _t.update_bytes(_url, dl_bytes, total)
+
         opts["progress_hooks"] = [_progress_hook]
         # Suppress yt-dlp's own console progress — our tracker handles display
         opts["noprogress"] = True
@@ -1175,6 +1263,7 @@ def _get_adblock_extension(config):
     log.step("Downloading uBlock Origin Lite extension...")
     try:
         import urllib.request
+
         urllib.request.urlretrieve(DEFAULT_ADBLOCK_URL, dest)
         log.success(f"Saved to {dest}")
         return dest
@@ -1242,8 +1331,10 @@ def _apply_adblock_strictness(driver, config):
     level_name = str(config.get("adblock_strictness", "optimal")).strip().lower()
     level_num = _STRICTNESS_LEVELS.get(level_name)
     if level_num is None:
-        log.warn(f"Unknown adblock strictness '{level_name}' "
-                 f"(expected: {', '.join(_STRICTNESS_LEVELS)}), using 'complete'")
+        log.warn(
+            f"Unknown adblock strictness '{level_name}' "
+            f"(expected: {', '.join(_STRICTNESS_LEVELS)}), using 'complete'"
+        )
         level_num = _STRICTNESS_LEVELS["complete"]
 
     if level_num == _STRICTNESS_LEVELS["optimal"]:
@@ -1265,9 +1356,9 @@ def _parse_localstorage_value(raw):
     """Normalise localStorage config into a dict of key→value strings.
 
     Accepted inputs:
-      - dict  {"key": "value", ...}       (from TOML [localstorage] section)
-      - list  ["key=value", ...]           (from CLI --localstorage repeated)
-      - str   "key=value,key2=value2"      (from env var)
+        - dict  {"key": "value", ...}       (from TOML [localstorage] section)
+        - list  ["key=value", ...]           (from CLI --localstorage repeated)
+        - str   "key=value,key2=value2"      (from env var)
     """
     if not raw:
         return {}
@@ -1305,7 +1396,8 @@ def _apply_localstorage(driver, config, target_url):
         for key, value in entries.items():
             driver.execute_script(
                 "localStorage.setItem(arguments[0], arguments[1]);",
-                key, value,
+                key,
+                value,
             )
             log.detail(f"localStorage: {key} = {value}")
     except Exception as e:
@@ -1316,9 +1408,9 @@ def _parse_headers_value(raw):
     """Normalise custom headers config into a dict of name→value strings.
 
     Accepted inputs:
-      - dict  {"Name": "Value", ...}       (from TOML [headers] section)
-      - list  ["Name=Value", ...]           (from CLI --header repeated)
-      - str   "Name=Value,Name2=Value2"     (from env var)
+        - dict  {"Name": "Value", ...}       (from TOML [headers] section)
+        - list  ["Name=Value", ...]           (from CLI --header repeated)
+        - str   "Name=Value,Name2=Value2"     (from env var)
     """
     if not raw:
         return {}
@@ -1428,7 +1520,15 @@ def _apply_browser_headers_and_auth(driver, config):
 # Core logic
 # ---------------------------------------------------------------------------
 _VIDEO_EXTENSIONS = (
-    ".mp4", ".webm", ".mkv", ".avi", ".flv", ".ts", ".mov", ".wmv", ".mpd",
+    ".mp4",
+    ".webm",
+    ".mkv",
+    ".avi",
+    ".flv",
+    ".ts",
+    ".mov",
+    ".wmv",
+    ".mpd",
 )
 
 
@@ -1442,8 +1542,7 @@ def _extract_urls_from_network_logs(driver):
             try:
                 msg = json.loads(entry["message"])["message"]
                 method = msg.get("method", "")
-                if method not in ("Network.requestWillBeSent",
-                                  "Network.responseReceived"):
+                if method not in ("Network.requestWillBeSent", "Network.responseReceived"):
                     continue
                 req_url = ""
                 if method == "Network.requestWillBeSent":
@@ -1456,8 +1555,7 @@ def _extract_urls_from_network_logs(driver):
                 path = req_url.split("?")[0].split("#")[0]
                 if ".m3u8" in path:
                     m3u8_urls.append(req_url)
-                elif any(path.endswith(ext) or (ext + "/") in path
-                         for ext in _VIDEO_EXTENSIONS):
+                elif any(path.endswith(ext) or (ext + "/") in path for ext in _VIDEO_EXTENSIONS):
                     video_urls.append(req_url)
             except (KeyError, json.JSONDecodeError):
                 continue
@@ -1521,8 +1619,7 @@ def _filter_urls(urls, pattern, label):
         if filtered:
             dropped = len(urls) - len(filtered)
             if dropped:
-                log.info(f"{label} filter '{pattern}' matched "
-                         f"{len(filtered)}/{len(urls)} URLs")
+                log.info(f"{label} filter '{pattern}' matched {len(filtered)}/{len(urls)} URLs")
             return filtered
         log.warn(f"{label} filter '{pattern}' matched nothing — using all {len(urls)} URLs")
         return urls
@@ -1608,7 +1705,9 @@ def _interactive_select_loop(urls, label):
 
         indices = _parse_selection(raw, len(urls))
         if indices is None:
-            log.warn(f"Invalid selection '{raw}'. Use numbers between 1 and {len(urls)}, ranges like 1-3, or 'all'.")
+            log.warn(
+                f"Invalid selection '{raw}'. Use numbers between 1 and {len(urls)}, ranges like 1-3, or 'all'."
+            )
             continue
 
         chosen = [urls[i - 1] for i in sorted(indices)]
@@ -1670,9 +1769,7 @@ def _download_m3u8(m3u8_url, effective_config, page_title, output_path_override)
         else:
             log.error(f"yt-dlp exited with code {result.returncode}")
     else:
-        ydl_opts, outtmpl = build_ydl_opts(
-            effective_config, page_title, output_path_override
-        )
+        ydl_opts, outtmpl = build_ydl_opts(effective_config, page_title, output_path_override)
         log.step(f"Downloading {outtmpl}")
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([m3u8_url])
@@ -1685,10 +1782,7 @@ def _try_ytdlp_direct(url, effective_config, output_path_override=None):
     Returns True on success, False if yt-dlp can't handle the URL.
     """
     extractors_csv = effective_config.get("extractors")
-    allowed = (
-        [e.strip() for e in extractors_csv.split(",") if e.strip()]
-        if extractors_csv else []
-    )
+    allowed = [e.strip() for e in extractors_csv.split(",") if e.strip()] if extractors_csv else []
 
     info = _probe_ytdlp(url, effective_config, allowed)
     if not info:
@@ -1725,9 +1819,7 @@ def _run_ytdlp_direct(url, effective_config, title, allowed, output_path_overrid
     use_system = effective_config.get("use_system_ytdlp") or effective_config.get("yt_dlp_path")
 
     if use_system:
-        cmd, outtmpl = _build_system_ytdlp_cmd(
-            effective_config, url, title, output_path_override
-        )
+        cmd, outtmpl = _build_system_ytdlp_cmd(effective_config, url, title, output_path_override)
         for ext_name in allowed:
             cmd.insert(-1, "--ies")
             cmd.insert(-1, ext_name)
@@ -1740,9 +1832,7 @@ def _run_ytdlp_direct(url, effective_config, title, allowed, output_path_overrid
         log.error(f"yt-dlp exited with code {result.returncode}")
         return False
 
-    ydl_opts, outtmpl = build_ydl_opts(
-        effective_config, title, output_path_override
-    )
+    ydl_opts, outtmpl = build_ydl_opts(effective_config, title, output_path_override)
     if allowed:
         ydl_opts["allowed_extractors"] = allowed
 
@@ -1856,10 +1946,10 @@ def _resolve_worker_count(value, num_entries):
     """Resolve the parallel worker count from config value.
 
     Accepted values:
-      - "all"           → one worker per entry (unlimited)
-      - "cores"         → number of physical CPU cores
-      - "logical_cores" → number of logical CPU cores (os.cpu_count())
-      - an integer       → that exact number
+        - "all"           → one worker per entry (unlimited)
+        - "cores"         → number of physical CPU cores
+        - "logical_cores" → number of logical CPU cores (os.cpu_count())
+        - an integer       → that exact number
     """
     if value is None:
         value = "all"
@@ -1968,8 +2058,10 @@ def download_from_file(file_path, config):
             return
 
         workers = _resolve_worker_count(config.get("parallel"), len(entries))
-        log.header(f"Downloading {len(entries)} URL{'s' if len(entries) != 1 else ''} "
-                   f"with {workers} worker{'s' if workers != 1 else ''}")
+        log.header(
+            f"Downloading {len(entries)} URL{'s' if len(entries) != 1 else ''} "
+            f"with {workers} worker{'s' if workers != 1 else ''}"
+        )
 
         results = []
         start_time = time.time()
@@ -2004,9 +2096,7 @@ def download_from_file(file_path, config):
             _tracker.setup_scroll_region()
             with ThreadPoolExecutor(max_workers=workers) as pool:
                 futures = {
-                    pool.submit(
-                        fetch_m3u8_and_download, url, config, None, overrides
-                    ): url
+                    pool.submit(fetch_m3u8_and_download, url, config, None, overrides): url
                     for url, overrides in entries
                 }
                 for future in as_completed(futures):
@@ -2044,13 +2134,18 @@ def download_from_file(file_path, config):
 def _read_clipboard():
     """Read the current clipboard text. Returns empty string on failure."""
     # Try platform-specific commands
-    for cmd in ("xclip -selection clipboard -o",
-                "xsel --clipboard --output",
-                "pbpaste",
-                "powershell.exe -command Get-Clipboard"):
+    for cmd in (
+        "xclip -selection clipboard -o",
+        "xsel --clipboard --output",
+        "pbpaste",
+        "powershell.exe -command Get-Clipboard",
+    ):
         try:
             result = subprocess.run(
-                cmd.split(), capture_output=True, text=True, timeout=2,
+                cmd.split(),
+                capture_output=True,
+                text=True,
+                timeout=2,
             )
             if result.returncode == 0:
                 return result.stdout.strip()
@@ -2061,7 +2156,7 @@ def _read_clipboard():
 
 def _looks_like_url(text):
     """Quick check if text looks like a URL worth trying."""
-    return bool(text) and re.match(r'https?://', text.strip().split('\n')[0])
+    return bool(text) and re.match(r"https?://", text.strip().split("\n")[0])
 
 
 def watch_clipboard(config, interval=1.0):
@@ -2074,7 +2169,7 @@ def watch_clipboard(config, interval=1.0):
     # whatever is already there
     last_text = _read_clipboard()
     if _looks_like_url(last_text):
-        seen.add(last_text.strip().split('\n')[0])
+        seen.add(last_text.strip().split("\n")[0])
 
     try:
         while True:
@@ -2085,7 +2180,7 @@ def watch_clipboard(config, interval=1.0):
             last_text = text
 
             # Extract the first line as the URL
-            url = text.strip().split('\n')[0].strip()
+            url = text.strip().split("\n")[0].strip()
             if not _looks_like_url(url):
                 continue
             if url in seen:

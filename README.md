@@ -1,21 +1,34 @@
 # m3u8-extractor
 
-Extract m3u8 stream URLs from web pages and download them with [yt-dlp](https://github.com/yt-dlp/yt-dlp). Uses Selenium to render JavaScript-heavy pages, then hands the discovered stream URL to yt-dlp for reliable downloading.
+Extract m3u8 stream URLs from web pages and download them
+with [yt-dlp](https://github.com/yt-dlp/yt-dlp). Uses Selenium to
+render JavaScript-heavy pages, then hands the discovered stream
+URL to yt-dlp for reliable downloading.
 
 ## Features
 
-- **Automatic m3u8 extraction** — loads pages with headless Chrome, finds m3u8 URLs in the rendered source
-- **Smart extractor routing** — tries yt-dlp's native extractors first, falls back to Selenium m3u8 only when needed
-- **Three config sources** — CLI flags, environment variables, and TOML config file (priority: CLI > env > TOML > defaults)
-- **URL rules** — pattern-matched per-site config in TOML (e.g. always use audio-only for music sites)
-- **Batch downloads** — read URLs from a file, with per-URL and group option overrides
-- **Parallel downloads** — download all URLs simultaneously by default, or limit concurrency
-- **Clipboard watch mode** — monitors clipboard for URLs and downloads automatically
-- **Multiple m3u8 handling** — warns when multiple streams are found, with options to select or filter
+- **Automatic m3u8 extraction** — loads pages with headless
+  Chrome, finds m3u8 URLs in the rendered source
+- **Smart extractor routing** — tries yt-dlp's native extractors
+  first, falls back to Selenium m3u8 only when needed
+- **Three config sources** — CLI flags, environment variables,
+  and TOML config file (priority: CLI > env > TOML > defaults)
+- **URL rules** — pattern-matched per-site config in TOML
+  (e.g. always use audio-only for music sites)
+- **Batch downloads** — read URLs from a file, with per-URL
+  and group option overrides
+- **Parallel downloads** — download all URLs simultaneously
+  by default, or limit concurrency
+- **Clipboard watch mode** — monitors clipboard for URLs and
+  downloads automatically
+- **Multiple m3u8 handling** — warns when multiple streams are
+  found, with options to select or filter
 - **Adblock** — optionally loads uBlock Origin Lite to bypass ad-heavy pages
 - **Proxy support** — separate proxies for browser and downloader
-- **System yt-dlp** — use the system binary or a custom yt-dlp path instead of the Python library
-- **Pretty output** — colored, symbol-coded progress with yt-dlp's built-in progress bar
+- **System yt-dlp** — use the system binary or a custom yt-dlp
+  path instead of the Python library
+- **Pretty output** — colored, symbol-coded progress with
+  yt-dlp's built-in progress bar
 
 ## Installation
 
@@ -33,7 +46,8 @@ pip install selenium yt-dlp
 pip install tomli
 ```
 
-Make sure [ChromeDriver](https://chromedriver.chromium.org/) is in your `PATH` and matches your Chrome version.
+Make sure [ChromeDriver](https://chromedriver.chromium.org/) is in
+your `PATH` and matches your Chrome version.
 
 ## Quick start
 
@@ -53,11 +67,12 @@ m3u8-extractor --audio-only --adblock "https://example.com/video-page"
 
 ## Usage
 
-```
+```text
 m3u8-extractor [url] [options]
 ```
 
-If no URL is given and `--watch` is not set, URLs are read from a file (`urls.txt` by default).
+If no URL is given and `--watch` is not set, URLs are read from
+a file (`urls.txt` by default).
 
 ### General options
 
@@ -92,10 +107,10 @@ If no URL is given and `--watch` is not set, URLs are read from a file (`urls.tx
 
 ### yt-dlp binary
 
-| Flag                 | Description                                                  |
-| -------------------- | ------------------------------------------------------------ |
-| `--use-system-ytdlp` | Use the system `yt-dlp` binary instead of the Python library |
-| `--yt-dlp-path`      | Path to a specific yt-dlp binary                             |
+| Flag                 | Description                                                        |
+| -------------------- | ------------------------------------------------------------------ |
+| `--use-system-ytdlp` | Use the system `yt-dlp` binary instead of the Python library       |
+| `--yt-dlp-path`      | Path to a specific yt-dlp binary                                   |
 | `--ytdlp-args`       | Extra raw arguments forwarded to yt-dlp (e.g. `'--limit-rate 1M'`) |
 
 ### Parallelism
@@ -103,16 +118,16 @@ If no URL is given and `--watch` is not set, URLs are read from a file (`urls.tx
 | Flag               | Description                                                                          |
 | ------------------ | ------------------------------------------------------------------------------------ |
 | `-p`, `--parallel` | Number of parallel downloads: a number, `all` (default), `cores`, or `logical_cores` |
-| `--speed-unit`     | Speed display in progress bar: `bytes` (default, e.g. MB/s) or `bits` (e.g. Mbps)   |
+| `--speed-unit`     | Speed display in progress bar: `bytes` (default, e.g. MB/s) or `bits` (e.g. Mbps)    |
 
 ### Stream selection
 
-| Flag              | Description                                                                   |
-| ----------------- | ----------------------------------------------------------------------------- |
-| `--stream-type`   | Which stream types to look for: `both` (default), `m3u8`, or `video`          |
-| `--m3u8-select`   | Which stream when multiple found: `first` (default), `last`, `all`, or `interactive` |
-| `--m3u8-filter`   | Regex to filter m3u8 URLs before selection                                    |
-| `--video-filter`  | Regex to filter direct video URLs (mp4, webm, etc.) before selection          |
+| Flag             | Description                                                                          |
+| ---------------- | ------------------------------------------------------------------------------------ |
+| `--stream-type`  | Which stream types to look for: `both` (default), `m3u8`, or `video`                 |
+| `--m3u8-select`  | Which stream when multiple found: `first` (default), `last`, `all`, or `interactive` |
+| `--m3u8-filter`  | Regular expression to filter m3u8 URLs before selection                              |
+| `--video-filter` | Regular expression to filter direct video URLs (mp4, webm, etc.) before selection    |
 
 ### Adblock
 
@@ -124,10 +139,10 @@ If no URL is given and `--watch` is not set, URLs are read from a file (`urls.tx
 
 ### Extractor selection
 
-| Flag             | Description                                                                                           |
-| ---------------- | ----------------------------------------------------------------------------------------------------- |
-| `--extractor`    | Strategy: `auto` (default, try yt-dlp native then m3u8), `ytdlp` (native only), `m3u8` (Selenium only) |
-| `--extractors`   | Comma-separated allowlist of yt-dlp extractor names (e.g. `youtube,vimeo`)                             |
+| Flag           | Description                                                                                            |
+| -------------- | ------------------------------------------------------------------------------------------------------ |
+| `--extractor`  | Strategy: `auto` (default, try yt-dlp native then m3u8), `ytdlp` (native only), `m3u8` (Selenium only) |
+| `--extractors` | Comma-separated allowlist of yt-dlp extractor names (e.g. `youtube,vimeo`)                             |
 
 ### Proxy
 
@@ -148,7 +163,8 @@ If no URL is given and `--watch` is not set, URLs are read from a file (`urls.tx
 | -------------------------- | ------------------------------------------------------ |
 | `--localstorage KEY=VALUE` | Set a localStorage entry before page load (repeatable) |
 
-Example: `--localstorage "jwplayer.qualityLabel=HQ"` to force HQ quality on JWPlayer sites.
+Example: `--localstorage "jwplayer.qualityLabel=HQ"` to force
+HQ quality on JWPlayer sites.
 
 ### Headers & authentication
 
@@ -157,7 +173,8 @@ Example: `--localstorage "jwplayer.qualityLabel=HQ"` to force HQ quality on JWPl
 | `--header NAME=VALUE` | Custom HTTP header for browser & yt-dlp (repeatable) |
 | `--auth USER:PASS`    | HTTP basic auth credentials                          |
 
-The `--cookies` file is loaded into both the Selenium browser and yt-dlp, so auth-gated pages work during extraction too.
+The `--cookies` file is loaded into both the Selenium browser
+and yt-dlp, so auth-gated pages work during extraction too.
 
 ### Watch mode
 
@@ -180,7 +197,8 @@ Settings are resolved with this priority:
 
 ### Config file
 
-Place a `config.toml` in the current directory or `~/.config/m3u8-extractor/config.toml`:
+Place a `config.toml` in the current directory or
+`~/.config/m3u8-extractor/config.toml`:
 
 ```toml
 # config.toml
@@ -226,7 +244,8 @@ video_and_captions_only = false
 
 ### URL rules
 
-Define per-site config using regex patterns in `[[url_rules]]` sections:
+Define per-site config using regular expression patterns in
+`[[url_rules]]` sections:
 
 ```toml
 # Use yt-dlp native extractor for YouTube
@@ -249,7 +268,9 @@ ignore_ssl_errors = true
 proxy = "socks5://127.0.0.1:1080"
 ```
 
-Rules are checked in order — all matching rules are merged, with later rules overriding earlier ones. Any config option can be used in a rule.
+Rules are checked in order — all matching rules are merged,
+with later rules overriding earlier ones. Any config option can
+be used in a rule.
 
 ### Environment variables
 
@@ -302,7 +323,7 @@ Use `-c` or `-f` to specify an explicit path.
 
 The URL list file supports three formats per line, plus group directives:
 
-```
+```text
 # Comments start with #
 
 # 1. Just a URL (uses page title as filename)
@@ -313,17 +334,18 @@ https://example.com/video2 My Custom Title
 
 # 3. URL with per-URL option flags
 https://example.com/video3 --audio-only -o "music/song"
-https://example.com/video4 --captions -q "bestvideo+bestaudio" --referrer "https://example.com"
+https://example.com/video4 --captions -q "bestvideo+bestaudio"
 https://example.com/video5 -o "downloads/" --thumbnail --transcode mkv
 ```
 
-Per-URL flags override the global config for that specific download. All CLI flags are supported.
+Per-URL flags override the global config for that specific
+download. All CLI flags are supported.
 
 ### Group directives
 
 Use `---` to set options for a group of URLs:
 
-```
+```text
 # Start an audio-only group
 --- --audio-only -q "bestaudio"
 https://example.com/song1
@@ -345,7 +367,8 @@ https://example.com/song4
 https://example.com/video5 --video-only   # overrides audio-only for this URL
 ```
 
-Group options apply to all URLs that follow, until the next `---` directive. Use `---` alone to reset back to global defaults.
+Group options apply to all URLs that follow, until the next
+`---` directive. Use `---` alone to reset back to global defaults.
 
 ## Examples
 
@@ -354,13 +377,16 @@ Group options apply to all URLs that follow, until the next `---` directive. Use
 m3u8-extractor "https://example.com/video"
 
 # Download with custom output and quality
-m3u8-extractor -o "my-video" -q "bestvideo+bestaudio" "https://example.com/video"
+m3u8-extractor -o my-video -q "bestvideo+bestaudio" \
+  "https://example.com/video"
 
 # Batch download with 4 parallel workers, using adblock
 m3u8-extractor -p 4 --adblock
 
 # Audio only, through a proxy
-m3u8-extractor --audio-only --proxy "socks5://127.0.0.1:1080" "https://example.com/video"
+m3u8-extractor --audio-only \
+  --proxy socks5://127.0.0.1:1080 \
+  "https://example.com/video"
 
 # Watch clipboard, download captions too
 m3u8-extractor --watch --captions
@@ -383,6 +409,10 @@ m3u8-extractor --extractors "youtube,vimeo" "https://youtube.com/watch?v=abc123"
 
 ## License
 
-This project is licensed under the [GNU Affero General Public License v3.0](https://www.gnu.org/licenses/agpl-3.0.html) only (AGPL-3.0-only).
+This project is licensed under the
+[GNU Affero General Public License v3.0][agpl]
+only (AGPL-3.0-only).
 
 See [LICENSE](LICENSE) for the full text.
+
+[agpl]: https://www.gnu.org/licenses/agpl-3.0.html

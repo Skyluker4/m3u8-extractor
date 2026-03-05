@@ -47,6 +47,7 @@
 # use_system_ytdlp = false             # Use the system yt-dlp binary instead of Python lib
 # yt_dlp_path = "/usr/local/bin/yt-dlp"  # Path to a specific yt-dlp binary
 # ytdlp_args = "--limit-rate 1M --retries 10"  # Extra raw arguments for yt-dlp
+# generic_impersonate = false          # Add --extractor-args "generic:impersonate"
 
 # ── Extractor ────────────────────────────────────────────────────────────────
 
@@ -100,5 +101,6 @@
 # [[url_rules]]
 # pattern = "sketchy-site\\.com"
 # adblock = true
+# generic_impersonate = true
 # ignore_ssl_errors = true
 # proxy = "socks5://127.0.0.1:1080"

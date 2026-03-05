@@ -107,11 +107,12 @@ a file (`urls.txt` by default).
 
 ### yt-dlp binary
 
-| Flag                 | Description                                                        |
-| -------------------- | ------------------------------------------------------------------ |
-| `--use-system-ytdlp` | Use the system `yt-dlp` binary instead of the Python library       |
-| `--yt-dlp-path`      | Path to a specific yt-dlp binary                                   |
-| `--ytdlp-args`       | Extra raw arguments forwarded to yt-dlp (e.g. `'--limit-rate 1M'`) |
+|Flag|Description|
+|---|---|
+|`--use-system-ytdlp`|Use the system `yt-dlp` binary instead of the Python library|
+|`--yt-dlp-path`|Path to a specific yt-dlp binary|
+|`--ytdlp-args`|Extra raw arguments forwarded to yt-dlp (e.g. `'--limit-rate 1M'`)|
+|`--generic-impersonate`|Pass `--extractor-args "generic:impersonate"` for Cloudflare 403 challenges|
 
 ### Parallelism
 
@@ -218,6 +219,7 @@ cookies = ""
 
 use_system_ytdlp = false
 # yt_dlp_path = "/usr/local/bin/yt-dlp"
+# generic_impersonate = false   # adds --extractor-args "generic:impersonate"
 
 extractor = "auto"    # "auto", "ytdlp", or "m3u8"
 # extractors = "youtube,vimeo"  # restrict yt-dlp to these extractors
@@ -264,6 +266,7 @@ output_path = "music/"
 [[url_rules]]
 pattern = "sketchy-site\\.com"
 adblock = true
+generic_impersonate = true
 ignore_ssl_errors = true
 proxy = "socks5://127.0.0.1:1080"
 ```
@@ -288,6 +291,7 @@ M3U8_QUALITY="bestvideo+bestaudio"
 M3U8_TRANSCODE=mp4
 M3U8_YT_DLP_PATH=""
 M3U8_USE_SYSTEM_YTDLP=false
+M3U8_GENERIC_IMPERSONATE=false
 M3U8_EXTRACTOR=auto
 M3U8_EXTRACTORS=""
 M3U8_PARALLEL=all

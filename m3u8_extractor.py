@@ -435,6 +435,7 @@ DEFAULTS = {
     "localstorage": None,  # localStorage key=value pairs to set before page load
     "extractor": "auto",  # "auto", "ytdlp", or "m3u8"
     "extractors": None,  # comma-separated allowlist of yt-dlp extractors
+    "generic_impersonate": False,  # pass --extractor-args "generic:impersonate"
     # Download-mode flags (all False = default yt-dlp behaviour)
     "thumbnail": False,  # download thumbnail alongside video
     "thumbnail_only": False,
@@ -478,6 +479,7 @@ ENV_MAP = {
     "localstorage": "M3U8_LOCALSTORAGE",
     "extractor": "M3U8_EXTRACTOR",
     "extractors": "M3U8_EXTRACTORS",
+    "generic_impersonate": "M3U8_GENERIC_IMPERSONATE",
     "thumbnail": "M3U8_THUMBNAIL",
     "thumbnail_only": "M3U8_THUMBNAIL_ONLY",
     "captions": "M3U8_CAPTIONS",
@@ -495,6 +497,7 @@ BOOL_KEYS = {
     "use_system_ytdlp",
     "adblock",
     "ignore_ssl_errors",
+    "generic_impersonate",
     "thumbnail",
     "thumbnail_only",
     "captions",
@@ -708,6 +711,13 @@ def build_arg_parser():
         help="Comma-separated allowlist of yt-dlp extractor names "
         "(e.g. 'youtube,vimeo'). Only used with 'auto' or 'ytdlp' mode",
     )
+    ext.add_argument(
+        "--generic-impersonate",
+        action="store_true",
+        default=None,
+        help="Enable yt-dlp generic extractor impersonation "
+        "(--extractor-args 'generic:impersonate')",
+    )
 
     # Download-mode flags
     mode = p.add_argument_group("download mode")
@@ -816,6 +826,7 @@ def load_cli_config(args_ns):
         "localstorage": args_ns.localstorage,
         "extractor": args_ns.extractor,
         "extractors": args_ns.extractors,
+        "generic_impersonate": args_ns.generic_impersonate,
         "thumbnail": args_ns.thumbnail,
         "thumbnail_only": args_ns.thumbnail_only,
         "captions": args_ns.captions,
@@ -879,6 +890,7 @@ def _build_per_url_parser():
     p.add_argument("--localstorage", action="append")
     p.add_argument("--extractor")
     p.add_argument("--extractors")
+    p.add_argument("--generic-impersonate", action="store_true", default=None)
     p.add_argument("--thumbnail", action="store_true", default=None)
     p.add_argument("--thumbnail-only", action="store_true", default=None)
     p.add_argument("--captions", action="store_true", default=None)
@@ -1102,6 +1114,8 @@ def build_ydl_opts(config, title, output_path_override=None):
 
     # Extra yt-dlp arguments (library mode: parse CLI flags into opts dict)
     ytdlp_args = config.get("ytdlp_args")
+    if config.get("generic_impersonate"):
+        ytdlp_args = f"{ytdlp_args or ''} --extractor-args generic:impersonate".strip()
     if ytdlp_args:
         extra_tokens = shlex.split(ytdlp_args) if isinstance(ytdlp_args, str) else list(ytdlp_args)
         try:
@@ -1218,6 +1232,8 @@ def _build_system_ytdlp_cmd(config, m3u8_url, title, output_path_override=None):
 
     # Extra yt-dlp arguments (system mode: splice raw tokens before the URL)
     ytdlp_args = config.get("ytdlp_args")
+    if config.get("generic_impersonate"):
+        ytdlp_args = f"{ytdlp_args or ''} --extractor-args generic:impersonate".strip()
     if ytdlp_args:
         extra_tokens = shlex.split(ytdlp_args) if isinstance(ytdlp_args, str) else list(ytdlp_args)
         cmd.extend(extra_tokens)

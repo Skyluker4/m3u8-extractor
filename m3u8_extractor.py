@@ -543,6 +543,11 @@ def load_toml_config(path="config.toml"):
     if isinstance(headers, dict) and headers:
         data["headers"] = headers
 
+    # Extract [cookies] table into the flat key
+    cookies = data.pop("cookies", None)
+    if isinstance(cookies, dict) and cookies:
+        data["cookies"] = cookies
+
     # Normalise bools
     for key in BOOL_KEYS:
         if key in data:
@@ -1084,9 +1089,11 @@ def build_ydl_opts(config, title, output_path_override=None):
         opts.setdefault("http_headers", {})["User-Agent"] = user_agent
 
     # Cookies
-    cookies = config.get("cookies")
-    if cookies:
-        opts["cookiefile"] = cookies
+    cookie_file, cookie_header, _cookie_pairs = _resolve_cookie_inputs(config)
+    if cookie_file:
+        opts["cookiefile"] = cookie_file
+    if cookie_header:
+        opts.setdefault("http_headers", {})["Cookie"] = cookie_header
 
     # Custom headers
     headers = _parse_headers_value(config.get("headers"))
@@ -1200,9 +1207,11 @@ def _build_system_ytdlp_cmd(config, m3u8_url, title, output_path_override=None):
         cmd += ["--user-agent", user_agent]
 
     # Cookies
-    cookies = config.get("cookies")
-    if cookies:
-        cmd += ["--cookies", cookies]
+    cookie_file, cookie_header, _cookie_pairs = _resolve_cookie_inputs(config)
+    if cookie_file:
+        cmd += ["--cookies", cookie_file]
+    if cookie_header:
+        cmd += ["--add-header", f"Cookie:{cookie_header}"]
 
     # Custom headers
     headers = _parse_headers_value(config.get("headers"))
@@ -1451,6 +1460,66 @@ def _parse_headers_value(raw):
     return {}
 
 
+def _parse_cookie_pairs(raw):
+    """Normalise cookie config into a dict of cookie-name→value strings."""
+    if not raw:
+        return {}
+    if isinstance(raw, dict):
+        return {str(k).strip(): str(v) for k, v in raw.items() if str(k).strip()}
+    if isinstance(raw, list):
+        out = {}
+        for item in raw:
+            if "=" in str(item):
+                k, v = str(item).split("=", 1)
+                k = k.strip()
+                if k:
+                    out[k] = v.strip()
+        return out
+    if isinstance(raw, str):
+        out = {}
+        for pair in re.split(r"[;,]", raw):
+            pair = pair.strip()
+            if "=" in pair:
+                k, v = pair.split("=", 1)
+                k = k.strip()
+                if k:
+                    out[k] = v.strip()
+        return out
+    return {}
+
+
+def _resolve_cookie_inputs(config):
+    """Resolve cookie config into (cookie_file, cookie_header, cookie_pairs)."""
+    raw = config.get("cookies")
+    if not raw:
+        return None, None, {}
+
+    if isinstance(raw, dict):
+        pairs = _parse_cookie_pairs(raw)
+        if not pairs:
+            return None, None, {}
+        header = "; ".join(f"{k}={v}" for k, v in pairs.items())
+        return None, header, pairs
+
+    if isinstance(raw, str):
+        candidate = raw.strip()
+        if not candidate:
+            return None, None, {}
+        if os.path.isfile(candidate):
+            return candidate, None, {}
+        pairs = _parse_cookie_pairs(candidate)
+        if pairs:
+            header = "; ".join(f"{k}={v}" for k, v in pairs.items())
+            return None, header, pairs
+        return candidate, None, {}
+
+    pairs = _parse_cookie_pairs(raw)
+    if not pairs:
+        return None, None, {}
+    header = "; ".join(f"{k}={v}" for k, v in pairs.items())
+    return None, header, pairs
+
+
 def _parse_netscape_cookies(filepath):
     """Parse a Netscape-format cookies file into a list of Selenium cookie dicts."""
     cookies = []
@@ -1484,11 +1553,18 @@ def _parse_netscape_cookies(filepath):
 
 
 def _apply_browser_cookies(driver, config, target_url):
-    """Load cookies from a Netscape file into the Selenium browser."""
-    cookie_file = config.get("cookies")
-    if not cookie_file:
+    """Load cookies into Selenium from file path or direct cookie pairs."""
+    cookie_file, _cookie_header, cookie_pairs = _resolve_cookie_inputs(config)
+    if not cookie_file and not cookie_pairs:
         return
-    cookies = _parse_netscape_cookies(cookie_file)
+
+    cookies = []
+    if cookie_file:
+        cookies = _parse_netscape_cookies(cookie_file)
+
+    for name, value in cookie_pairs.items():
+        cookies.append({"name": name, "value": value, "path": "/"})
+
     if not cookies:
         return
 
@@ -1822,8 +1898,11 @@ def _probe_ytdlp(url, config, allowed):
         opts["proxy"] = config["proxy"]
     if config.get("ignore_ssl_errors"):
         opts["nocheckcertificate"] = True
-    if config.get("cookies"):
-        opts["cookiefile"] = config["cookies"]
+    cookie_file, cookie_header, _cookie_pairs = _resolve_cookie_inputs(config)
+    if cookie_file:
+        opts["cookiefile"] = cookie_file
+    if cookie_header:
+        opts.setdefault("http_headers", {})["Cookie"] = cookie_header
 
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:

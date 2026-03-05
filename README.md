@@ -174,8 +174,9 @@ HQ quality on JWPlayer sites.
 | `--header NAME=VALUE` | Custom HTTP header for browser & yt-dlp (repeatable) |
 | `--auth USER:PASS`    | HTTP basic auth credentials                          |
 
-The `--cookies` file is loaded into both the Selenium browser
-and yt-dlp, so auth-gated pages work during extraction too.
+`cookies` can be either a Netscape cookie file path or direct
+cookie values in TOML (`[cookies]`). Both are applied to
+Selenium and yt-dlp for auth-gated pages.
 
 ### Watch mode
 
@@ -215,7 +216,11 @@ speed_unit = "bytes"   # "bytes" (KB/s, MB/s) or "bits" (Kbps, Mbps)
 
 referrer = ""
 use_base_url_as_referrer = false
-cookies = ""
+# cookies = "/path/to/cookies.txt"  # Netscape cookie file
+
+#[cookies]                          # Alternative: direct cookie values
+#sessionid = "abc123"
+#cf_clearance = "your_token_here"
 
 use_system_ytdlp = false
 # yt_dlp_path = "/usr/local/bin/yt-dlp"

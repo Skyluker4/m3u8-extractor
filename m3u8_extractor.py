@@ -1040,6 +1040,11 @@ def _resolve_outtmpl(config, title, output_path_override):
     return out if ext else f"{out}.%(ext)s"
 
 
+def _display_outtmpl(outtmpl):
+    """Format yt-dlp output template for human-readable log messages."""
+    return str(outtmpl).replace("%(ext)s", "$EXT")
+
+
 def _apply_format(config, opts):
     """Set the format selector based on download-mode flags."""
     fmt = config.get("quality")
@@ -1937,18 +1942,20 @@ def _download_m3u8(m3u8_url, effective_config, page_title, output_path_override)
         cmd, outtmpl = _build_system_ytdlp_cmd(
             effective_config, m3u8_url, page_title, output_path_override
         )
-        log.step(f"Downloading {outtmpl} (system yt-dlp)")
+        display_out = _display_outtmpl(outtmpl)
+        log.step(f"Downloading {display_out} (system yt-dlp)")
         result = subprocess.run(cmd, check=False)
         if result.returncode == 0:
-            log.success(f"Completed: {outtmpl}")
+            log.success(f"Completed: {display_out}")
         else:
             log.error(f"yt-dlp exited with code {result.returncode}")
     else:
         ydl_opts, outtmpl = build_ydl_opts(effective_config, page_title, output_path_override)
-        log.step(f"Downloading {outtmpl}")
+        display_out = _display_outtmpl(outtmpl)
+        log.step(f"Downloading {display_out}")
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([m3u8_url])
-        log.success(f"Completed: {outtmpl}")
+        log.success(f"Completed: {display_out}")
 
 
 def _try_ytdlp_direct(url, effective_config, output_path_override=None):
@@ -2002,10 +2009,11 @@ def _run_ytdlp_direct(url, effective_config, title, allowed, output_path_overrid
             cmd.insert(-1, "--ies")
             cmd.insert(-1, ext_name)
 
-        log.step(f"Downloading {outtmpl} (system yt-dlp, native extractor)")
+        display_out = _display_outtmpl(outtmpl)
+        log.step(f"Downloading {display_out} (system yt-dlp, native extractor)")
         result = subprocess.run(cmd, check=False)
         if result.returncode == 0:
-            log.success(f"Completed: {outtmpl}")
+            log.success(f"Completed: {display_out}")
             return True
         log.error(f"yt-dlp exited with code {result.returncode}")
         return False
@@ -2014,11 +2022,12 @@ def _run_ytdlp_direct(url, effective_config, title, allowed, output_path_overrid
     if allowed:
         ydl_opts["allowed_extractors"] = allowed
 
-    log.step(f"Downloading {outtmpl} (yt-dlp native extractor)")
+    display_out = _display_outtmpl(outtmpl)
+    log.step(f"Downloading {display_out} (yt-dlp native extractor)")
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
-        log.success(f"Completed: {outtmpl}")
+        log.success(f"Completed: {display_out}")
         return True
     except Exception as e:
         log.warn(f"yt-dlp native download failed: {e}")
@@ -2190,25 +2199,29 @@ def _print_summary(results, elapsed):
     results: list of (url, success: bool, error: str|None)
     elapsed: total time in seconds
     """
-    # Start summary on a clean line without clearing the whole screen.
-    sys.stdout.write("\r\033[K\n")
-    sys.stdout.flush()
-
     succeeded = [r for r in results if r[1]]
     failed = [r for r in results if not r[1]]
 
-    log.header("Summary")
-    log.info(f"Total time: {_format_duration(elapsed)}")
-    log.success(f"{len(succeeded)} succeeded")
+    lines = [
+        "Summary",
+        f"{_Style._c(_Style.CYAN, 'ℹ')}  Total time: {_format_duration(elapsed)}",
+        f"{_Style._c(_Style.GREEN, '✔')}  {len(succeeded)} succeeded",
+    ]
 
     if failed:
-        log.error(f"{len(failed)} failed")
+        lines.append(f"{_Style._c(_Style.RED, '✖')}  {len(failed)} failed")
         for url, _, error in failed:
             reason = error or "unknown error"
-            log.detail(f"{url}")
-            log.detail(f"  └ {reason}")
+            lines.append(f"   {_Style._c(_Style.DIM, url)}")
+            lines.append(f"   {_Style._c(_Style.DIM, f'└ {reason}')}")
     else:
-        log.success("No failures")
+        lines.append(f"{_Style._c(_Style.GREEN, '✔')}  No failures")
+
+    # Write as a clean block: clear line before every line to avoid stale suffixes.
+    sys.stdout.write("\033[0m\n")
+    for line in lines:
+        sys.stdout.write(f"\r\033[K{line}\n")
+    sys.stdout.flush()
 
 
 def download_from_file(file_path, config):
@@ -2284,8 +2297,9 @@ def download_from_file(file_path, config):
                     results.append((url, False, str(exc)))
             _tracker = None
         else:
-            _tracker = _ProgressTracker(len(entries), speed_unit=speed_unit, max_active=workers)
-            _tracker.setup_scroll_region()
+            # Disable the live terminal tracker in parallel mode to avoid
+            # shell-dependent screen corruption/scroll-region issues.
+            _tracker = None
             with ThreadPoolExecutor(max_workers=workers) as pool:
                 futures = {
                     pool.submit(fetch_m3u8_and_download, url, config, None, overrides): url
@@ -2295,20 +2309,10 @@ def download_from_file(file_path, config):
                     src_url = futures[future]
                     try:
                         ok, err = future.result()
-                        if ok:
-                            _tracker.record_success()
-                        else:
-                            _tracker.record_failure()
-                        _tracker.finish_bytes(src_url)
-                        _tracker.draw_bar()
                         results.append((src_url, ok, err))
                     except Exception as exc:
                         log.error(f"Failed: {src_url} — {exc}")
-                        _tracker.record_failure()
-                        _tracker.finish_bytes(src_url)
-                        _tracker.draw_bar()
                         results.append((src_url, False, str(exc)))
-            _tracker.reset_scroll_region()
             _tracker = None
 
         elapsed = time.time() - start_time

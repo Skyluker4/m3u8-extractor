@@ -75,6 +75,7 @@ class _ProgressTracker:
             return
         self.clear_bar()
         sys.stdout.write("\033[r")
+        sys.stdout.write("\r\033[K")
         sys.stdout.flush()
         self._scroll_region_set = False
 
@@ -2006,8 +2007,8 @@ def _print_summary(results, elapsed):
     results: list of (url, success: bool, error: str|None)
     elapsed: total time in seconds
     """
-    # Clear any leftover \r-based progress remnants from yt-dlp
-    sys.stdout.write("\r\033[K")
+    # Start summary on a clean line without clearing the whole screen.
+    sys.stdout.write("\r\033[K\n")
     sys.stdout.flush()
 
     succeeded = [r for r in results if r[1]]
@@ -2087,26 +2088,17 @@ def download_from_file(file_path, config):
         speed_unit = config.get("speed_unit", "bytes")
 
         if workers <= 1 or len(entries) == 1:
-            _tracker = _ProgressTracker(len(entries), speed_unit=speed_unit, max_active=1)
-            _tracker.setup_scroll_region()
+            # Single-worker mode: avoid reserved terminal bottom lines,
+            # which can hide previous output in some shells/themes.
+            _tracker = None
             for i, (url, overrides) in enumerate(entries, 1):
                 log.step(f"[{i}/{len(entries)}] {url}")
                 try:
                     ok, err = fetch_m3u8_and_download(url, config, per_url_overrides=overrides)
-                    if ok:
-                        _tracker.record_success()
-                    else:
-                        _tracker.record_failure()
-                    _tracker.finish_bytes(url)
-                    _tracker.draw_bar()
                     results.append((url, ok, err))
                 except Exception as exc:
                     log.error(f"Failed: {url} — {exc}")
-                    _tracker.record_failure()
-                    _tracker.finish_bytes(url)
-                    _tracker.draw_bar()
                     results.append((url, False, str(exc)))
-            _tracker.reset_scroll_region()
             _tracker = None
         else:
             _tracker = _ProgressTracker(len(entries), speed_unit=speed_unit, max_active=workers)

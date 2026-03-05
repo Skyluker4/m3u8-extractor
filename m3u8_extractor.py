@@ -437,6 +437,7 @@ DEFAULTS = {
     "localstorage": None,  # localStorage key=value pairs to set before page load
     "extractor": "auto",  # "auto", "ytdlp", or "m3u8"
     "extractors": None,  # comma-separated allowlist of yt-dlp extractors
+    "use_selenium_session_for_download": False,  # reuse Selenium req headers/cookies for stream URL
     "generic_impersonate": False,  # pass --extractor-args "generic:impersonate"
     # Download-mode flags (all False = default yt-dlp behaviour)
     "thumbnail": False,  # download thumbnail alongside video
@@ -481,6 +482,7 @@ ENV_MAP = {
     "localstorage": "M3U8_LOCALSTORAGE",
     "extractor": "M3U8_EXTRACTOR",
     "extractors": "M3U8_EXTRACTORS",
+    "use_selenium_session_for_download": "M3U8_USE_SELENIUM_SESSION_FOR_DOWNLOAD",
     "generic_impersonate": "M3U8_GENERIC_IMPERSONATE",
     "thumbnail": "M3U8_THUMBNAIL",
     "thumbnail_only": "M3U8_THUMBNAIL_ONLY",
@@ -499,6 +501,7 @@ BOOL_KEYS = {
     "use_system_ytdlp",
     "adblock",
     "ignore_ssl_errors",
+    "use_selenium_session_for_download",
     "generic_impersonate",
     "thumbnail",
     "thumbnail_only",
@@ -719,6 +722,12 @@ def build_arg_parser():
         "(e.g. 'youtube,vimeo'). Only used with 'auto' or 'ytdlp' mode",
     )
     ext.add_argument(
+        "--use-selenium-session-for-download",
+        action="store_true",
+        default=None,
+        help="Reuse Selenium request headers/cookies when downloading extracted stream URLs",
+    )
+    ext.add_argument(
         "--generic-impersonate",
         action="store_true",
         default=None,
@@ -833,6 +842,7 @@ def load_cli_config(args_ns):
         "localstorage": args_ns.localstorage,
         "extractor": args_ns.extractor,
         "extractors": args_ns.extractors,
+        "use_selenium_session_for_download": args_ns.use_selenium_session_for_download,
         "generic_impersonate": args_ns.generic_impersonate,
         "thumbnail": args_ns.thumbnail,
         "thumbnail_only": args_ns.thumbnail_only,
@@ -897,6 +907,7 @@ def _build_per_url_parser():
     p.add_argument("--localstorage", action="append")
     p.add_argument("--extractor")
     p.add_argument("--extractors")
+    p.add_argument("--use-selenium-session-for-download", action="store_true", default=None)
     p.add_argument("--generic-impersonate", action="store_true", default=None)
     p.add_argument("--thumbnail", action="store_true", default=None)
     p.add_argument("--thumbnail-only", action="store_true", default=None)
@@ -1088,6 +1099,11 @@ def build_ydl_opts(config, title, output_path_override=None):
     if user_agent:
         opts.setdefault("http_headers", {})["User-Agent"] = user_agent
 
+    # Browser-captured request headers (from Selenium), if enabled
+    browser_headers = _parse_headers_value(config.get("_browser_headers"))
+    if browser_headers:
+        opts.setdefault("http_headers", {}).update(browser_headers)
+
     # Cookies
     cookie_file, cookie_header, _cookie_pairs = _resolve_cookie_inputs(config)
     if cookie_file:
@@ -1205,6 +1221,11 @@ def _build_system_ytdlp_cmd(config, m3u8_url, title, output_path_override=None):
     user_agent = config.get("user_agent")
     if user_agent:
         cmd += ["--user-agent", user_agent]
+
+    # Browser-captured request headers (from Selenium), if enabled
+    browser_headers = _parse_headers_value(config.get("_browser_headers"))
+    for hdr_name, hdr_value in browser_headers.items():
+        cmd += ["--add-header", f"{hdr_name}:{hdr_value}"]
 
     # Cookies
     cookie_file, cookie_header, _cookie_pairs = _resolve_cookie_inputs(config)
@@ -1491,11 +1512,16 @@ def _parse_cookie_pairs(raw):
 def _resolve_cookie_inputs(config):
     """Resolve cookie config into (cookie_file, cookie_header, cookie_pairs)."""
     raw = config.get("cookies")
+    browser_pairs = _parse_cookie_pairs(config.get("_browser_cookie_pairs"))
     if not raw:
-        return None, None, {}
+        if not browser_pairs:
+            return None, None, {}
+        header = "; ".join(f"{k}={v}" for k, v in browser_pairs.items())
+        return None, header, browser_pairs
 
     if isinstance(raw, dict):
         pairs = _parse_cookie_pairs(raw)
+        pairs = {**browser_pairs, **pairs}
         if not pairs:
             return None, None, {}
         header = "; ".join(f"{k}={v}" for k, v in pairs.items())
@@ -1504,20 +1530,70 @@ def _resolve_cookie_inputs(config):
     if isinstance(raw, str):
         candidate = raw.strip()
         if not candidate:
-            return None, None, {}
+            if not browser_pairs:
+                return None, None, {}
+            header = "; ".join(f"{k}={v}" for k, v in browser_pairs.items())
+            return None, header, browser_pairs
         if os.path.isfile(candidate):
-            return candidate, None, {}
+            if not browser_pairs:
+                return candidate, None, {}
+            header = "; ".join(f"{k}={v}" for k, v in browser_pairs.items())
+            return candidate, header, browser_pairs
         pairs = _parse_cookie_pairs(candidate)
+        pairs = {**browser_pairs, **pairs}
         if pairs:
             header = "; ".join(f"{k}={v}" for k, v in pairs.items())
             return None, header, pairs
+        if browser_pairs:
+            header = "; ".join(f"{k}={v}" for k, v in browser_pairs.items())
+            return candidate, header, browser_pairs
         return candidate, None, {}
 
     pairs = _parse_cookie_pairs(raw)
+    pairs = {**browser_pairs, **pairs}
     if not pairs:
         return None, None, {}
     header = "; ".join(f"{k}={v}" for k, v in pairs.items())
     return None, header, pairs
+
+
+_BROWSER_HEADER_BLOCKLIST = {
+    "cookie",
+    "content-length",
+    "host",
+    "connection",
+    "accept-encoding",
+}
+
+
+def _sanitise_browser_headers(raw):
+    """Keep only safe browser request headers for replay via yt-dlp."""
+    if not isinstance(raw, dict):
+        return {}
+    cleaned = {}
+    for name, value in raw.items():
+        key = str(name).strip()
+        if not key or key.startswith(":"):
+            continue
+        key_l = key.lower()
+        if key_l in _BROWSER_HEADER_BLOCKLIST:
+            continue
+        if value is None:
+            continue
+        cleaned[key] = str(value)
+    return cleaned
+
+
+def _header_lookup_for_url(header_map, target_url):
+    """Get captured browser request headers for a URL (with path-only fallback)."""
+    if target_url in header_map:
+        return header_map[target_url]
+
+    target_base = target_url.split("?", 1)[0].split("#", 1)[0]
+    for seen_url, seen_headers in header_map.items():
+        if seen_url.split("?", 1)[0].split("#", 1)[0] == target_base:
+            return seen_headers
+    return {}
 
 
 def _parse_netscape_cookies(filepath):
@@ -1630,6 +1706,7 @@ def _extract_urls_from_network_logs(driver):
     """Extract m3u8 and direct video URLs from Chrome's performance logs."""
     m3u8_urls = []
     video_urls = []
+    request_headers_by_url = {}
     try:
         logs = driver.get_log("performance")
         for entry in logs:
@@ -1640,7 +1717,11 @@ def _extract_urls_from_network_logs(driver):
                     continue
                 req_url = ""
                 if method == "Network.requestWillBeSent":
-                    req_url = msg["params"].get("request", {}).get("url", "")
+                    request = msg["params"].get("request", {})
+                    req_url = request.get("url", "")
+                    headers = _sanitise_browser_headers(request.get("headers", {}))
+                    if req_url and headers:
+                        request_headers_by_url[req_url] = headers
                 elif method == "Network.responseReceived":
                     req_url = msg["params"].get("response", {}).get("url", "")
                 if not req_url:
@@ -1655,14 +1736,14 @@ def _extract_urls_from_network_logs(driver):
                 continue
     except Exception as e:
         log.detail(f"Could not read network logs: {e}")
-    return m3u8_urls, video_urls
+    return m3u8_urls, video_urls, request_headers_by_url
 
 
 def extract_m3u8(driver, url):
     """Use Selenium to load a page and extract m3u8 and direct video URLs.
 
     Searches both the rendered page source and intercepted network requests.
-    Returns (m3u8_urls, video_urls, page_title).
+    Returns (m3u8_urls, video_urls, page_title, request_headers_by_url).
     """
     driver.get(url)
     time.sleep(5)
@@ -1680,7 +1761,7 @@ def extract_m3u8(driver, url):
     video_matches = re.findall(video_pattern, page_source)
 
     # Also check network logs
-    net_m3u8, net_video = _extract_urls_from_network_logs(driver)
+    net_m3u8, net_video, request_headers_by_url = _extract_urls_from_network_logs(driver)
     m3u8_matches.extend(net_m3u8)
     video_matches.extend(net_video)
 
@@ -1700,7 +1781,7 @@ def extract_m3u8(driver, url):
             fixed.append(u)
         return fixed
 
-    return _dedup_and_fix(m3u8_matches), _dedup_and_fix(video_matches), page_title
+    return _dedup_and_fix(m3u8_matches), _dedup_and_fix(video_matches), page_title, request_headers_by_url
 
 
 def _filter_urls(urls, pattern, label):
@@ -1998,7 +2079,18 @@ def fetch_m3u8_and_download(url, config, output_path_override=None, per_url_over
     _apply_localstorage(driver, effective_config, url)
 
     try:
-        m3u8_urls, video_urls, page_title = extract_m3u8(driver, url)
+        m3u8_urls, video_urls, page_title, request_headers_by_url = extract_m3u8(driver, url)
+
+        browser_cookie_pairs = {}
+        if effective_config.get("use_selenium_session_for_download"):
+            try:
+                for cookie in driver.get_cookies():
+                    name = str(cookie.get("name", "")).strip()
+                    value = str(cookie.get("value", ""))
+                    if name:
+                        browser_cookie_pairs[name] = value
+            except Exception as e:
+                log.detail(f"Could not read Selenium cookies: {e}")
 
         # Apply stream_type preference
         stype = str(effective_config.get("stream_type", "both")).strip().lower()
@@ -2012,19 +2104,31 @@ def fetch_m3u8_and_download(url, config, output_path_override=None, per_url_over
             log.warn(msg)
             return False, msg
 
-        driver.quit()
-
         if m3u8_urls:
             selected = _select_m3u8_urls(m3u8_urls, effective_config, url)
             for m3u8_url in selected:
                 log.info(f"Found m3u8: {m3u8_url}")
-                _download_m3u8(m3u8_url, effective_config, page_title, output_path_override)
+                download_config = effective_config
+                if effective_config.get("use_selenium_session_for_download"):
+                    download_config = dict(effective_config)
+                    download_config["_browser_headers"] = _header_lookup_for_url(
+                        request_headers_by_url, m3u8_url
+                    )
+                    download_config["_browser_cookie_pairs"] = dict(browser_cookie_pairs)
+                _download_m3u8(m3u8_url, download_config, page_title, output_path_override)
         else:
             log.info(f"Found {len(video_urls)} direct video URL(s)")
             selected = _select_video_urls(video_urls, effective_config, url)
             for vid_url in selected:
                 log.info(f"Found video: {vid_url}")
-                _download_m3u8(vid_url, effective_config, page_title, output_path_override)
+                download_config = effective_config
+                if effective_config.get("use_selenium_session_for_download"):
+                    download_config = dict(effective_config)
+                    download_config["_browser_headers"] = _header_lookup_for_url(
+                        request_headers_by_url, vid_url
+                    )
+                    download_config["_browser_cookie_pairs"] = dict(browser_cookie_pairs)
+                _download_m3u8(vid_url, download_config, page_title, output_path_override)
 
         return True, None
 

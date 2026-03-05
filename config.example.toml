@@ -57,6 +57,7 @@
 
 # extractor = "auto"                   # "auto", "ytdlp", or "m3u8"
 # extractors = "youtube,vimeo"          # Restrict yt-dlp to these extractors only
+# use_selenium_session_for_download = false  # Reuse Selenium headers/cookies for yt-dlp stream downloads
 
 # ── Parallelism ──────────────────────────────────────────────────────────────
 

@@ -140,10 +140,11 @@ a file (`urls.txt` by default).
 
 ### Extractor selection
 
-| Flag           | Description                                                                                            |
-| -------------- | ------------------------------------------------------------------------------------------------------ |
-| `--extractor`  | Strategy: `auto` (default, try yt-dlp native then m3u8), `ytdlp` (native only), `m3u8` (Selenium only) |
-| `--extractors` | Comma-separated allowlist of yt-dlp extractor names (e.g. `youtube,vimeo`)                             |
+|Flag|Description|
+|---|---|
+|`--extractor`|Strategy: `auto` (default, try yt-dlp native then m3u8), `ytdlp` (native only), `m3u8` (Selenium only)|
+|`--extractors`|Comma-separated allowlist of yt-dlp extractor names (e.g. `youtube,vimeo`)|
+|`--use-selenium-session-for-download`|Reuse Selenium request headers/cookies for extracted stream URL downloads|
 
 ### Proxy
 
@@ -228,6 +229,8 @@ use_system_ytdlp = false
 
 extractor = "auto"    # "auto", "ytdlp", or "m3u8"
 # extractors = "youtube,vimeo"  # restrict yt-dlp to these extractors
+# use_selenium_session_for_download = false
+# replay Selenium headers/cookies in yt-dlp
 
 m3u8_select = "first"    # "first", "last", "all", or "interactive"
 # m3u8_filter = "pattern"

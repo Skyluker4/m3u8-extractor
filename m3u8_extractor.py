@@ -63,8 +63,9 @@ class _ProgressTracker:
             return
         term_h = shutil.get_terminal_size((80, 24)).lines
         scroll_end = max(1, term_h - self._reserved_lines)
+        sys.stdout.write("\033[s")
         sys.stdout.write(f"\033[1;{scroll_end}r")
-        sys.stdout.write(f"\033[{scroll_end};0H")
+        sys.stdout.write("\033[u")
         sys.stdout.flush()
         self._scroll_region_set = True
 

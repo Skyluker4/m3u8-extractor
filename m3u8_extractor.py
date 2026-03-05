@@ -17,16 +17,7 @@ import yt_dlp
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 
-if sys.version_info >= (3, 11):
-    import tomllib
-else:
-    try:
-        import tomllib
-    except ImportError:
-        try:
-            import tomli as tomllib
-        except ImportError:
-            tomllib = None
+import tomllib
 
 
 # ---------------------------------------------------------------------------

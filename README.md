@@ -32,7 +32,7 @@ URL to yt-dlp for reliable downloading.
 
 ## Installation
 
-**Requirements:** Python 3.9+, Chrome/Chromium, ChromeDriver
+**Requirements:** Python 3.11+, Chrome/Chromium, ChromeDriver
 
 ```bash
 pip install -e .

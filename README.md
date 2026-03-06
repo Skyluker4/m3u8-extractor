@@ -107,12 +107,12 @@ a file (`urls.txt` by default).
 
 ### yt-dlp binary
 
-|Flag|Description|
-|---|---|
-|`--use-system-ytdlp`|Use the system `yt-dlp` binary instead of the Python library|
-|`--yt-dlp-path`|Path to a specific yt-dlp binary|
-|`--ytdlp-args`|Extra raw arguments forwarded to yt-dlp (e.g. `'--limit-rate 1M'`)|
-|`--generic-impersonate`|Pass `--extractor-args "generic:impersonate"` for Cloudflare 403 challenges|
+| Flag                    | Description                                                                 |
+| ----------------------- | --------------------------------------------------------------------------- |
+| `--use-system-ytdlp`    | Use the system `yt-dlp` binary instead of the Python library                |
+| `--yt-dlp-path`         | Path to a specific yt-dlp binary                                            |
+| `--ytdlp-args`          | Extra raw arguments forwarded to yt-dlp (e.g. `'--limit-rate 1M'`)          |
+| `--generic-impersonate` | Pass `--extractor-args "generic:impersonate"` for Cloudflare 403 challenges |
 
 ### Parallelism
 
@@ -140,11 +140,11 @@ a file (`urls.txt` by default).
 
 ### Extractor selection
 
-|Flag|Description|
-|---|---|
-|`--extractor`|Strategy: `auto` (default, try yt-dlp native then m3u8), `ytdlp` (native only), `m3u8` (Selenium only)|
-|`--extractors`|Comma-separated allowlist of yt-dlp extractor names (e.g. `youtube,vimeo`)|
-|`--use-selenium-session-for-download`|Reuse Selenium request headers/cookies for extracted stream URL downloads|
+| Flag                                  | Description                                                                                            |
+| ------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `--extractor`                         | Strategy: `auto` (default, try yt-dlp native then m3u8), `ytdlp` (native only), `m3u8` (Selenium only) |
+| `--extractors`                        | Comma-separated allowlist of yt-dlp extractor names (e.g. `youtube,vimeo`)                             |
+| `--use-selenium-session-for-download` | Reuse Selenium request headers/cookies for extracted stream URL downloads                              |
 
 ### Proxy
 

@@ -13,11 +13,10 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urljoin, urlparse
 
+import tomllib
 import yt_dlp
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
-
-import tomllib
 
 
 # ---------------------------------------------------------------------------
@@ -1777,7 +1776,12 @@ def extract_m3u8(driver, url):
             fixed.append(u)
         return fixed
 
-    return _dedup_and_fix(m3u8_matches), _dedup_and_fix(video_matches), page_title, request_headers_by_url
+    return (
+        _dedup_and_fix(m3u8_matches),
+        _dedup_and_fix(video_matches),
+        page_title,
+        request_headers_by_url,
+    )
 
 
 def _filter_urls(urls, pattern, label):
@@ -1877,7 +1881,8 @@ def _interactive_select_loop(urls, label):
         indices = _parse_selection(raw, len(urls))
         if indices is None:
             log.warn(
-                f"Invalid selection '{raw}'. Use numbers between 1 and {len(urls)}, ranges like 1-3, or 'all'."
+                f"Invalid selection '{raw}'. Use numbers between 1"
+                f" and {len(urls)}, ranges like 1-3, or 'all'."
             )
             continue
 
@@ -2271,8 +2276,6 @@ def download_from_file(file_path, config):
         results = []
         start_time = time.time()
         global _tracker
-
-        speed_unit = config.get("speed_unit", "bytes")
 
         if workers <= 1 or len(entries) == 1:
             # Single-worker mode: avoid reserved terminal bottom lines,

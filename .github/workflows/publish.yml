@@ -18,13 +18,17 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
+
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: "3.x"
+
       - name: Install build dependencies
         run: python -m pip install --upgrade pip build
+
       - name: Build sdist and wheel
         run: python -m build
+
       - name: Upload distribution artifacts
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
@@ -49,10 +53,12 @@ jobs:
         with:
           name: python-package-distributions
           path: dist/
+
       - name: Generate build attestations
         uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
         with:
           subject-path: "dist/*"
+
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@ed0c53931b1dc9bd32cbe73a98c7f6766f8a527e # v1.13.0
         with:
@@ -73,6 +79,7 @@ jobs:
         with:
           name: python-package-distributions
           path: dist/
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@a06a81a03ee405af7f2048a818ed3f03bbf83c7b # v2.5.0
         with:
@@ -92,11 +99,13 @@ jobs:
         with:
           name: python-package-distributions
           path: dist/
+
       - name: Delete existing dev release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: gh release delete latest --yes --cleanup-tag || true
+
       - name: Update Development Build release
         uses: softprops/action-gh-release@a06a81a03ee405af7f2048a818ed3f03bbf83c7b # v2.5.0
         with:

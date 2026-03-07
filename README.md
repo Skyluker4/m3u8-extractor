@@ -35,15 +35,15 @@ URL to yt-dlp for reliable downloading.
 **Requirements:** Python 3.11+, Chrome/Chromium, ChromeDriver
 
 ```bash
-pip install -e .
+pipx install m3u8-extractor
 ```
 
-Or install dependencies directly:
+[![PyPI](https://img.shields.io/pypi/v/m3u8-extractor)](https://pypi.org/project/m3u8-extractor/)
+
+Or install from source:
 
 ```bash
-pip install selenium yt-dlp
-# On Python < 3.11, also:
-pip install tomli
+pipx install -e .
 ```
 
 Make sure [ChromeDriver](https://chromedriver.chromium.org/) is in

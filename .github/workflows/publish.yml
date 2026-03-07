@@ -92,10 +92,15 @@ jobs:
         with:
           name: python-package-distributions
           path: dist/
+      - name: Delete existing dev release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release delete latest --yes --cleanup-tag || true
       - name: Update Development Build release
         uses: softprops/action-gh-release@a06a81a03ee405af7f2048a818ed3f03bbf83c7b # v2.5.0
         with:
-          tag_name: dev
+          tag_name: latest
           name: Development Build
           body: |
             Latest build from the `main` branch.

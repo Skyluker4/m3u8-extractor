@@ -524,9 +524,15 @@ def _collect_from_dir(dirpath, extensions, max_depth, current_depth):
     """Recursively collect matching files from *dirpath*.
 
     Returns a sorted list of absolute/relative file paths.
+    Directories that cannot be listed (permissions, disappearance, etc.)
+    are skipped with a warning.
     """
     results = []
-    children = sorted(os.listdir(dirpath))
+    try:
+        children = sorted(os.listdir(dirpath))
+    except OSError as e:
+        log.warn(f"Cannot read directory '{dirpath}': {e}")
+        return results
     for name in children:
         if name.startswith("."):
             continue

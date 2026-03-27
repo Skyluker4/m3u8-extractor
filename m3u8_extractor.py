@@ -438,38 +438,57 @@ def _resolve_default_file(filename):
     return filename
 
 
-def _expand_paths(paths, extensions):
+def _expand_paths(paths, extensions, max_depth=None):
     """Expand a list of file/directory paths into individual file paths.
 
     For each entry in *paths*:
     - If it is a file, include it as-is.
-    - If it is a directory, include every file whose extension (lower-cased)
-      is in *extensions*, sorted alphabetically so that numeric prefixes like
-      ``01-``, ``02-`` control ordering.
+    - If it is a directory, recursively include every file whose extension
+      (lower-cased) is in *extensions*.  Files are sorted alphabetically at
+      each directory level so that numeric prefixes like ``01-``, ``02-``
+      control ordering.
     - Otherwise, include it as-is (downstream code will report the error).
 
     *extensions* should be a set of lowercased suffixes including the dot,
     e.g. ``{".txt"}`` or ``{".toml"}``.
+
+    *max_depth* controls how deep into subdirectories to recurse:
+    - ``None``  – no limit (fully recursive)
+    - ``0``     – directory itself only (no subdirectories, same as before)
+    - ``1``     – direct children directories, etc.
     """
     expanded = []
     for p in paths:
         if os.path.isdir(p):
-            children = sorted(os.listdir(p))
-            found = False
-            for name in children:
-                if name.startswith("."):
-                    continue
-                if os.path.splitext(name)[1].lower() in extensions:
-                    full = os.path.join(p, name)
-                    if os.path.isfile(full):
-                        expanded.append(full)
-                        found = True
+            found = _collect_from_dir(p, extensions, max_depth, 0)
             if not found:
                 exts = ", ".join(sorted(extensions))
                 log.warn(f"No {exts} files found in directory: {p}")
+            else:
+                expanded.extend(found)
         else:
             expanded.append(p)
     return expanded
+
+
+def _collect_from_dir(dirpath, extensions, max_depth, current_depth):
+    """Recursively collect matching files from *dirpath*.
+
+    Returns a sorted list of absolute/relative file paths.
+    """
+    results = []
+    children = sorted(os.listdir(dirpath))
+    for name in children:
+        if name.startswith("."):
+            continue
+        full = os.path.join(dirpath, name)
+        if os.path.isfile(full):
+            if os.path.splitext(name)[1].lower() in extensions:
+                results.append(full)
+        elif os.path.isdir(full):
+            if max_depth is None or current_depth < max_depth:
+                results.extend(_collect_from_dir(full, extensions, max_depth, current_depth + 1))
+    return results
 
 
 DEFAULT_CONFIG_FILE = "config.toml"
@@ -520,6 +539,7 @@ DEFAULTS = {
     "overwrite": True,  # overwrite existing files (set False to skip)
     "ytdlp_args": None,  # extra raw arguments forwarded to yt-dlp
     "speed_unit": "bytes",  # "bytes" (KB/s, MB/s) or "bits" (Kbps, Mbps)
+    "scan_depth": 0,  # max directory recursion depth (0 = no recursion, None = unlimited)
 }
 
 # Map config keys -> environment variable names
@@ -564,6 +584,7 @@ ENV_MAP = {
     "overwrite": "M3U8_OVERWRITE",
     "ytdlp_args": "M3U8_YTDLP_ARGS",
     "speed_unit": "M3U8_SPEED_UNIT",
+    "scan_depth": "M3U8_SCAN_DEPTH",
 }
 
 BOOL_KEYS = {
@@ -667,8 +688,15 @@ def build_arg_parser():
         "--urls-file",
         action="append",
         help="Path to file or directory containing URLs (repeatable; "
-        "directories load all .txt files sorted alphabetically; "
+        "directories load all .txt files recursively, sorted alphabetically; "
         "default: ./urls.txt or ~/.config/m3u8-extractor/urls.txt)",
+    )
+    p.add_argument(
+        "--scan-depth",
+        type=int,
+        default=None,
+        help="Max directory recursion depth when -f or -c points to a directory "
+        "(0 = top-level only (default), 1 = one level of subdirectories, -1 = unlimited)",
     )
     p.add_argument("-o", "--output-path", help="Default output directory or filename template")
     p.add_argument("--title-prefix", help="String to prepend to every output filename")
@@ -885,7 +913,7 @@ def build_arg_parser():
         "--config",
         action="append",
         help="Path to TOML config file or directory (repeatable, later files override; "
-        "directories load all .toml files sorted alphabetically; "
+        "directories load all .toml files recursively, sorted alphabetically; "
         "default: ./config.toml or ~/.config/m3u8-extractor/config.toml)",
     )
 
@@ -950,6 +978,7 @@ def load_cli_config(args_ns):
         "video_and_captions_only": args_ns.video_and_captions_only,
         "ytdlp_args": args_ns.ytdlp_args,
         "speed_unit": args_ns.speed_unit,
+        "scan_depth": args_ns.scan_depth,
     }
     for key, val in mapping.items():
         if val is not None:
@@ -2575,7 +2604,11 @@ def main():
 
     # Resolve config file(s): explicit flag > CWD > user config dir
     config_paths = args.config or [_resolve_default_file(DEFAULT_CONFIG_FILE)]
-    config_paths = _expand_paths(config_paths, {".toml"})
+    config_paths_depth = 0  # default: no recursion into subdirectories
+    # If --scan-depth was given on the CLI, use it for config expansion too
+    if args.scan_depth is not None:
+        config_paths_depth = args.scan_depth if args.scan_depth >= 0 else None
+    config_paths = _expand_paths(config_paths, {".toml"}, max_depth=config_paths_depth)
     toml_cfg = {}
     _DICT_MERGE_KEYS = {"headers", "cookies", "localstorage"}
     for _cfg_path in config_paths:
@@ -2615,7 +2648,11 @@ def main():
         if isinstance(urls_files, str):
             urls_files = [urls_files]
         resolved = [_resolve_default_file(f) for f in urls_files]
-        resolved = _expand_paths(resolved, {".txt"})
+        scan_depth = config.get("scan_depth", 0)
+        scan_depth = int(scan_depth)
+        if scan_depth < 0:
+            scan_depth = None
+        resolved = _expand_paths(resolved, {".txt"}, max_depth=scan_depth)
         download_from_file(resolved, config)
 
 

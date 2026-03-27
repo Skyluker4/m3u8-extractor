@@ -2321,22 +2321,37 @@ def download_from_file(file_path, config):
         global _tracker
 
         if workers <= 1 or len(entries) == 1:
-            # Single-worker mode: avoid reserved terminal bottom lines,
-            # which can hide previous output in some shells/themes.
-            _tracker = None
+            _tracker = _ProgressTracker(
+                len(entries),
+                speed_unit=config.get("speed_unit", "bytes"),
+                max_active=1,
+            )
+            _tracker.setup_scroll_region()
             for i, (url, overrides) in enumerate(entries, 1):
                 log.step(f"[{i}/{len(entries)}] {url}")
                 try:
                     ok, err = fetch_m3u8_and_download(url, config, per_url_overrides=overrides)
                     results.append((url, ok, err))
+                    if ok:
+                        _tracker.record_success()
+                    else:
+                        _tracker.record_failure()
                 except Exception as exc:
                     log.error(f"Failed: {url} — {exc}")
                     results.append((url, False, str(exc)))
+                    _tracker.record_failure()
+                finally:
+                    _tracker.finish_bytes(url)
+                    _tracker.draw_bar()
+            _tracker.reset_scroll_region()
             _tracker = None
         else:
-            # Disable the live terminal tracker in parallel mode to avoid
-            # shell-dependent screen corruption/scroll-region issues.
-            _tracker = None
+            _tracker = _ProgressTracker(
+                len(entries),
+                speed_unit=config.get("speed_unit", "bytes"),
+                max_active=workers,
+            )
+            _tracker.setup_scroll_region()
             with ThreadPoolExecutor(max_workers=workers) as pool:
                 futures = {
                     pool.submit(fetch_m3u8_and_download, url, config, None, overrides): url
@@ -2347,9 +2362,18 @@ def download_from_file(file_path, config):
                     try:
                         ok, err = future.result()
                         results.append((src_url, ok, err))
+                        if ok:
+                            _tracker.record_success()
+                        else:
+                            _tracker.record_failure()
                     except Exception as exc:
                         log.error(f"Failed: {src_url} — {exc}")
                         results.append((src_url, False, str(exc)))
+                        _tracker.record_failure()
+                    finally:
+                        _tracker.finish_bytes(src_url)
+                        _tracker.draw_bar()
+            _tracker.reset_scroll_region()
             _tracker = None
 
         elapsed = time.time() - start_time

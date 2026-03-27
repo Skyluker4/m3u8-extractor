@@ -438,6 +438,40 @@ def _resolve_default_file(filename):
     return filename
 
 
+def _expand_paths(paths, extensions):
+    """Expand a list of file/directory paths into individual file paths.
+
+    For each entry in *paths*:
+    - If it is a file, include it as-is.
+    - If it is a directory, include every file whose extension (lower-cased)
+      is in *extensions*, sorted alphabetically so that numeric prefixes like
+      ``01-``, ``02-`` control ordering.
+    - Otherwise, include it as-is (downstream code will report the error).
+
+    *extensions* should be a set of lowercased suffixes including the dot,
+    e.g. ``{".txt"}`` or ``{".toml"}``.
+    """
+    expanded = []
+    for p in paths:
+        if os.path.isdir(p):
+            children = sorted(os.listdir(p))
+            found = False
+            for name in children:
+                if name.startswith("."):
+                    continue
+                if os.path.splitext(name)[1].lower() in extensions:
+                    full = os.path.join(p, name)
+                    if os.path.isfile(full):
+                        expanded.append(full)
+                        found = True
+            if not found:
+                exts = ", ".join(sorted(extensions))
+                log.warn(f"No {exts} files found in directory: {p}")
+        else:
+            expanded.append(p)
+    return expanded
+
+
 DEFAULT_CONFIG_FILE = "config.toml"
 DEFAULT_URLS_FILE = "urls.txt"
 
@@ -632,7 +666,8 @@ def build_arg_parser():
         "-f",
         "--urls-file",
         action="append",
-        help="Path to file containing URLs (repeatable; "
+        help="Path to file or directory containing URLs (repeatable; "
+        "directories load all .txt files sorted alphabetically; "
         "default: ./urls.txt or ~/.config/m3u8-extractor/urls.txt)",
     )
     p.add_argument("-o", "--output-path", help="Default output directory or filename template")
@@ -849,7 +884,8 @@ def build_arg_parser():
         "-c",
         "--config",
         action="append",
-        help="Path to TOML config file (repeatable, later files override; "
+        help="Path to TOML config file or directory (repeatable, later files override; "
+        "directories load all .toml files sorted alphabetically; "
         "default: ./config.toml or ~/.config/m3u8-extractor/config.toml)",
     )
 
@@ -2539,6 +2575,7 @@ def main():
 
     # Resolve config file(s): explicit flag > CWD > user config dir
     config_paths = args.config or [_resolve_default_file(DEFAULT_CONFIG_FILE)]
+    config_paths = _expand_paths(config_paths, {".toml"})
     toml_cfg = {}
     _DICT_MERGE_KEYS = {"headers", "cookies", "localstorage"}
     for _cfg_path in config_paths:
@@ -2578,6 +2615,7 @@ def main():
         if isinstance(urls_files, str):
             urls_files = [urls_files]
         resolved = [_resolve_default_file(f) for f in urls_files]
+        resolved = _expand_paths(resolved, {".txt"})
         download_from_file(resolved, config)
 
 

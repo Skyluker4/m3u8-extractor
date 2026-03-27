@@ -2838,7 +2838,8 @@ def watch_clipboard(config, interval=1.0):
 
     Downloads run in a thread pool so new clipboard URLs are picked up
     immediately without waiting for the current download to finish.
-    The ``parallel`` config controls the pool size (queue depth).
+    The ``parallel`` config controls the maximum number of concurrent
+    downloads.
     """
     use_current = config.get("watch_use_current", True)
     log.header("Watching clipboard for URLs  (Ctrl+C to stop)")

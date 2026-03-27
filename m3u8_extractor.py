@@ -44,6 +44,7 @@ class _ProgressTracker:
 
     def __init__(self, total, speed_unit="bytes", max_active=1):
         self._lock = threading.Lock()
+        self._io_lock = threading.Lock()
         self.total = total
         self.completed = 0
         self.failed = 0
@@ -63,6 +64,7 @@ class _ProgressTracker:
         self._enabled = hasattr(sys.stdout, "isatty") and sys.stdout.isatty()
         self._last_bar = ""
         self._scroll_region_set = False
+        self._output_buffer = []
 
     def setup_scroll_region(self):
         """Reserve the bottom terminal lines for download progress + summary bar."""
@@ -85,6 +87,34 @@ class _ProgressTracker:
         sys.stdout.write("\r\033[K")
         sys.stdout.flush()
         self._scroll_region_set = False
+
+    def buffer_line(self, msg):
+        """Append a message to the output buffer (thread-safe)."""
+        with self._lock:
+            self._output_buffer.append(msg)
+
+    def print_live(self, msg):
+        """Buffer a message, print it in the scroll region, and redraw the bar.
+
+        All terminal I/O is serialised via ``_io_lock`` so output from
+        yt-dlp's internal threads never interleaves with the progress bar.
+        """
+        with self._lock:
+            self._output_buffer.append(msg)
+        with self._io_lock:
+            sys.stdout.write(msg + "\n")
+            sys.stdout.flush()
+        self.draw_bar()
+
+    def flush_buffer(self):
+        """Replay all buffered output lines as normal terminal text."""
+        with self._lock:
+            lines = list(self._output_buffer)
+            self._output_buffer.clear()
+        if not lines:
+            return
+        for line in lines:
+            print(line)
 
     @property
     def remaining(self):
@@ -161,8 +191,9 @@ class _ProgressTracker:
         for row in range(first_row, term_h + 1):
             buf += f"\033[{row};0H\033[K"
         buf += "\033[u"  # restore cursor
-        sys.stdout.write(buf)
-        sys.stdout.flush()
+        with self._io_lock:
+            sys.stdout.write(buf)
+            sys.stdout.flush()
         self._last_bar = ""
 
     def _build_download_line(self, url, term_width):
@@ -298,8 +329,9 @@ class _ProgressTracker:
         buf += "\033[u"  # restore cursor
 
         self._last_bar = summary_line
-        sys.stdout.write(buf)
-        sys.stdout.flush()
+        with self._io_lock:
+            sys.stdout.write(buf)
+            sys.stdout.flush()
 
     def _format_time(self, seconds):
         m, s = divmod(int(seconds), 60)
@@ -336,10 +368,7 @@ class _Style:
         """Print a message, handling progress bar if active."""
         global _tracker
         if _tracker is not None:
-            # Text prints normally inside the scroll region;
-            # the pinned bottom bar stays untouched.
-            print(msg)
-            _tracker.draw_bar()
+            _tracker.print_live(msg)
         else:
             print(msg)
 
@@ -1186,8 +1215,39 @@ def build_ydl_opts(config, title, output_path_override=None):
         except Exception as e:
             log.warn(f"Could not parse ytdlp_args for library mode: {e}")
 
-    # Progress tracking (when running in batch/parallel mode)
+    # Capture yt-dlp log output when our tracker is active
     tracker = _tracker
+    if tracker is not None:
+
+        class _TrackerLogger:
+            """yt-dlp logger that shows messages live and buffers for replay."""
+
+            _DL_PROGRESS_RE = re.compile(r"^\[download\]\s+\d+(\.\d+)?%\s+(of|at|in)\s")
+
+            def __init__(self, t):
+                self._t = t
+
+            def _emit(self, msg):
+                if not self._t:
+                    return
+                # Filter out [download] percentage-progress lines — our
+                # tracker already shows that information live.
+                if self._DL_PROGRESS_RE.match(msg):
+                    return
+                self._t.print_live(msg)
+
+            def debug(self, msg):
+                self._emit(msg)
+
+            def warning(self, msg):
+                self._emit(f"WARNING: {msg}")
+
+            def error(self, msg):
+                self._emit(f"ERROR: {msg}")
+
+        opts["logger"] = _TrackerLogger(tracker)
+
+    # Progress tracking (when running in batch/parallel mode)
     if tracker is not None:
         src_url = config.get("_tracker_url", "")
 
@@ -2343,8 +2403,10 @@ def download_from_file(file_path, config):
                 finally:
                     _tracker.finish_bytes(url)
                     _tracker.draw_bar()
-            _tracker.reset_scroll_region()
+            tracker_ref = _tracker
+            tracker_ref.reset_scroll_region()
             _tracker = None
+            tracker_ref.flush_buffer()
         else:
             _tracker = _ProgressTracker(
                 len(entries),
@@ -2373,8 +2435,10 @@ def download_from_file(file_path, config):
                     finally:
                         _tracker.finish_bytes(src_url)
                         _tracker.draw_bar()
-            _tracker.reset_scroll_region()
+            tracker_ref = _tracker
+            tracker_ref.reset_scroll_region()
             _tracker = None
+            tracker_ref.flush_buffer()
 
         elapsed = time.time() - start_time
         _print_summary(results, elapsed)

@@ -1,4 +1,21 @@
 #!/usr/bin/env python3
+# Copyright (C) 2026 Luke Andrew Simmons
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Affero General Public License as
+# published by the Free Software Foundation, version 3 of the License.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+# GNU Affero General Public License for more details.
+#
+# You should have received a copy of the GNU Affero General Public License
+# along with this program. If not, see <https://www.gnu.org/licenses/>.
+#
+# Luke Andrew Simmons is designated as the proxy who can decide whether
+# future versions of the GNU Affero General Public License can be used,
+# as described in Section 14 of version 3 of the license.
 
 import argparse
 import json

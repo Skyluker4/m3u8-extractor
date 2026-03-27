@@ -2591,6 +2591,7 @@ def _read_clipboard():
     """Read the current clipboard text. Returns empty string on failure."""
     # Try platform-specific commands
     for cmd in (
+        "wl-paste",
         "xclip -selection clipboard -o",
         "xsel --clipboard --output",
         "pbpaste",

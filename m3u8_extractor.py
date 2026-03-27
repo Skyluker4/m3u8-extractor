@@ -752,7 +752,7 @@ def build_arg_parser():
         "--urls-file",
         action="append",
         help="Path to file or directory containing URLs (repeatable; "
-        "directories load all .txt files recursively, sorted alphabetically; "
+        "directories load all .txt files (use --scan-depth for recursion), sorted alphabetically; "
         "default: ./urls.txt or ~/.config/m3u8-extractor/urls.txt)",
     )
     p.add_argument(
@@ -983,7 +983,7 @@ def build_arg_parser():
         "--config",
         action="append",
         help="Path to TOML config file or directory (repeatable, later files override; "
-        "directories load all .toml files recursively, sorted alphabetically; "
+        "directories load all .toml files (use --scan-depth for recursion), sorted alphabetically; "
         "default: ./config.toml or ~/.config/m3u8-extractor/config.toml)",
     )
 

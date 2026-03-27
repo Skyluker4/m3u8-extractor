@@ -631,8 +631,9 @@ def build_arg_parser():
     p.add_argument(
         "-f",
         "--urls-file",
-        help="Path to file containing URLs "
-        "(default: ./urls.txt or ~/.config/m3u8-extractor/urls.txt)",
+        action="append",
+        help="Path to file containing URLs (repeatable; "
+        "default: ./urls.txt or ~/.config/m3u8-extractor/urls.txt)",
     )
     p.add_argument("-o", "--output-path", help="Default output directory or filename template")
     p.add_argument("--title-prefix", help="String to prepend to every output filename")
@@ -847,8 +848,9 @@ def build_arg_parser():
     p.add_argument(
         "-c",
         "--config",
-        help="Path to TOML config file "
-        "(default: ./config.toml or ~/.config/m3u8-extractor/config.toml)",
+        action="append",
+        help="Path to TOML config file (repeatable, later files override; "
+        "default: ./config.toml or ~/.config/m3u8-extractor/config.toml)",
     )
 
     # Watch mode
@@ -2323,8 +2325,8 @@ def _print_summary(results, elapsed):
     sys.stdout.flush()
 
 
-def download_from_file(file_path, config):
-    """Read URLs from a file and download each one.
+def download_from_file(file_paths, config):
+    """Read URLs from one or more files and download each one.
 
     Supports group directives to set options for blocks of URLs:
         --- --audio-only --quality best
@@ -2333,41 +2335,51 @@ def download_from_file(file_path, config):
         ---
         https://example.com/video   # group reset, back to global defaults
     """
+    if isinstance(file_paths, str):
+        file_paths = [file_paths]
+
     per_url_parser = _build_per_url_parser()
     try:
-        with open(file_path, "r") as f:
-            lines = f.readlines()
-
         entries = []
-        group_overrides = {}
 
-        for line in lines:
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-
-            # Group directive: --- [options]
-            if line.startswith("---"):
-                group_overrides = _parse_group_directive(line, per_url_parser)
-                if group_overrides:
-                    flags = " ".join(f"{k}={v}" for k, v in group_overrides.items())
-                    log.info(f"Group options set: {flags}")
-                else:
-                    log.info("Group options reset")
-                continue
-
+        for file_path in file_paths:
             try:
-                url, url_overrides = _parse_url_line(line, per_url_parser)
-                # Merge: group options first, then per-URL overrides on top
-                merged = dict(group_overrides)
-                merged.update(url_overrides)
-                entries.append((url, merged))
-            except SystemExit:
-                log.warn(f"Could not parse line: {line}")
+                with open(file_path, "r") as f:
+                    lines = f.readlines()
+            except FileNotFoundError:
+                log.error(f"File not found: '{file_path}'")
                 continue
+
+            # Reset group overrides between files
+            group_overrides = {}
+
+            for line in lines:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+
+                # Group directive: --- [options]
+                if line.startswith("---"):
+                    group_overrides = _parse_group_directive(line, per_url_parser)
+                    if group_overrides:
+                        flags = " ".join(f"{k}={v}" for k, v in group_overrides.items())
+                        log.info(f"Group options set: {flags}")
+                    else:
+                        log.info("Group options reset")
+                    continue
+
+                try:
+                    url, url_overrides = _parse_url_line(line, per_url_parser)
+                    # Merge: group options first, then per-URL overrides on top
+                    merged = dict(group_overrides)
+                    merged.update(url_overrides)
+                    entries.append((url, merged))
+                except SystemExit:
+                    log.warn(f"Could not parse line: {line}")
+                    continue
 
         if not entries:
-            log.warn("No URLs found in the file.")
+            log.warn("No URLs found in the file(s).")
             return
 
         workers = _resolve_worker_count(config.get("parallel"), len(entries))
@@ -2443,10 +2455,8 @@ def download_from_file(file_path, config):
         elapsed = time.time() - start_time
         _print_summary(results, elapsed)
 
-    except FileNotFoundError:
-        log.error(f"File not found: '{file_path}'")
     except Exception as e:
-        log.error(f"An error occurred while reading the file: {e}")
+        log.error(f"An error occurred while reading the file(s): {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -2527,9 +2537,24 @@ def main():
     parser = build_arg_parser()
     args = parser.parse_args()
 
-    # Resolve config file: explicit flag > CWD > user config dir
-    toml_path = args.config or _resolve_default_file(DEFAULT_CONFIG_FILE)
-    toml_cfg = load_toml_config(toml_path)
+    # Resolve config file(s): explicit flag > CWD > user config dir
+    config_paths = args.config or [_resolve_default_file(DEFAULT_CONFIG_FILE)]
+    toml_cfg = {}
+    _DICT_MERGE_KEYS = {"headers", "cookies", "localstorage"}
+    for _cfg_path in config_paths:
+        _one = load_toml_config(_cfg_path)
+        # Combine url_rules across configs rather than replacing
+        if "_url_rules" in _one and "_url_rules" in toml_cfg:
+            toml_cfg["_url_rules"] = toml_cfg["_url_rules"] + _one.pop("_url_rules")
+        # Deep-merge dict-type keys so entries accumulate across files
+        for _dk in _DICT_MERGE_KEYS:
+            if _dk in _one and isinstance(_one[_dk], dict):
+                if _dk in toml_cfg and isinstance(toml_cfg[_dk], dict):
+                    merged = dict(toml_cfg[_dk])
+                    merged.update(_one.pop(_dk))
+                    toml_cfg[_dk] = merged
+        toml_cfg.update(_one)
+
     env_cfg = load_env_config()
     cli_cfg = load_cli_config(args)
 
@@ -2548,9 +2573,12 @@ def main():
         elapsed = time.time() - start_time
         _print_summary(results, elapsed)
     else:
-        # Batch download from file
-        urls_file = _resolve_default_file(config["urls_file"])
-        download_from_file(urls_file, config)
+        # Batch download from file(s)
+        urls_files = config.get("urls_file", DEFAULT_URLS_FILE)
+        if isinstance(urls_files, str):
+            urls_files = [urls_files]
+        resolved = [_resolve_default_file(f) for f in urls_files]
+        download_from_file(resolved, config)
 
 
 if __name__ == "__main__":

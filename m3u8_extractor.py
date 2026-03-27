@@ -1076,12 +1076,37 @@ def load_cli_config(args_ns):
     return cfg
 
 
+# Config keys whose values are filesystem paths and should have ~ expanded.
+_PATH_KEYS = {
+    "urls_file",
+    "output_path",
+    "cookies",
+    "yt_dlp_path",
+    "adblock_extension",
+}
+
+
+def _expand_user(value):
+    """Expand ``~`` in a path string or list of path strings."""
+    if isinstance(value, str):
+        return os.path.expanduser(value)
+    if isinstance(value, list):
+        return [os.path.expanduser(v) if isinstance(v, str) else v for v in value]
+    return value
+
+
 def merge_config(cli, env, toml_cfg):
     """Merge configs with priority: CLI > env vars > TOML > defaults."""
     merged = dict(DEFAULTS)
     merged.update(toml_cfg)
     merged.update(env)
     merged.update(cli)
+
+    # Expand ~ in all path-like values so "~/backup" works in TOML / env / CLI.
+    for key in _PATH_KEYS:
+        if key in merged and merged[key] is not None:
+            merged[key] = _expand_user(merged[key])
+
     return merged
 
 

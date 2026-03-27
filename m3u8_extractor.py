@@ -18,6 +18,7 @@
 # as described in Section 14 of version 3 of the license.
 
 import argparse
+import glob
 import json
 import os
 import re
@@ -438,6 +439,48 @@ def _resolve_default_file(filename):
     return filename
 
 
+def _split_output_paths(output_path):
+    """Split an output_path value into the primary path and extra copy destinations.
+
+    Accepts a string, a list of strings, or None.
+    Returns ``(primary, extras)`` where *primary* is a single string (or None)
+    and *extras* is a list of additional directory paths to copy into.
+    """
+    if output_path is None:
+        return None, []
+    if isinstance(output_path, str):
+        return output_path, []
+    paths = list(output_path)
+    if not paths:
+        return None, []
+    return paths[0], paths[1:]
+
+
+def _copy_to_extra_paths(outtmpl, extra_paths):
+    """Copy downloaded file(s) matching *outtmpl* into each extra directory.
+
+    *outtmpl* is the yt-dlp output template (e.g. ``downloads/Title.%(ext)s``).
+    The ``%(ext)s`` placeholder is replaced with a glob wildcard to find the
+    actual file(s) that were created (video, subtitles, thumbnail, etc.).
+    """
+    if not extra_paths:
+        return
+    pattern = outtmpl.replace("%(ext)s", "*")
+    files = glob.glob(pattern)
+    if not files:
+        return
+    for dest_dir in extra_paths:
+        if dest_dir.endswith(os.sep) or not os.path.splitext(dest_dir)[1]:
+            os.makedirs(dest_dir, exist_ok=True)
+        for src in files:
+            dest = os.path.join(dest_dir, os.path.basename(src))
+            try:
+                shutil.copy2(src, dest)
+                log.detail(f"Copied to {dest}")
+            except Exception as e:
+                log.warn(f"Failed to copy to {dest}: {e}")
+
+
 def _expand_paths(paths, extensions, max_depth=None):
     """Expand a list of file/directory paths into individual file paths.
 
@@ -698,7 +741,13 @@ def build_arg_parser():
         help="Max directory recursion depth when -f or -c points to a directory "
         "(0 = top-level only (default), 1 = one level of subdirectories, -1 = unlimited)",
     )
-    p.add_argument("-o", "--output-path", help="Default output directory or filename template")
+    p.add_argument(
+        "-o",
+        "--output-path",
+        action="append",
+        help="Output directory or filename template (repeatable; "
+        "first path is the download target, extras receive copies)",
+    )
     p.add_argument("--title-prefix", help="String to prepend to every output filename")
     p.add_argument(
         "--title-postfix",
@@ -1006,7 +1055,7 @@ def _build_per_url_parser():
     """Build a parser for per-URL and group inline options in the URLs file."""
     p = argparse.ArgumentParser(add_help=False)
     p.add_argument("url", nargs="?", default=None)
-    p.add_argument("-o", "--output", dest="output_path")
+    p.add_argument("-o", "--output", dest="output_path", action="append")
     p.add_argument("--title-prefix")
     p.add_argument("--title-postfix")
     p.add_argument("--referrer")
@@ -2103,6 +2152,7 @@ def _select_video_urls(video_urls, config, page_url):
 
 def _download_m3u8(m3u8_url, effective_config, page_title, output_path_override):
     """Download a single m3u8 URL using either the library or system yt-dlp."""
+    extra = effective_config.get("_extra_outputs", [])
     use_system = effective_config.get("use_system_ytdlp") or effective_config.get("yt_dlp_path")
     if use_system:
         cmd, outtmpl = _build_system_ytdlp_cmd(
@@ -2113,6 +2163,7 @@ def _download_m3u8(m3u8_url, effective_config, page_title, output_path_override)
         result = subprocess.run(cmd, check=False)
         if result.returncode == 0:
             log.success(f"Completed: {display_out}")
+            _copy_to_extra_paths(outtmpl, extra)
         else:
             log.error(f"yt-dlp exited with code {result.returncode}")
     else:
@@ -2122,6 +2173,7 @@ def _download_m3u8(m3u8_url, effective_config, page_title, output_path_override)
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([m3u8_url])
         log.success(f"Completed: {display_out}")
+        _copy_to_extra_paths(outtmpl, extra)
 
 
 def _try_ytdlp_direct(url, effective_config, output_path_override=None):
@@ -2167,6 +2219,7 @@ def _probe_ytdlp(url, config, allowed):
 
 def _run_ytdlp_direct(url, effective_config, title, allowed, output_path_override):
     """Run yt-dlp natively on a URL (after a successful probe)."""
+    extra = effective_config.get("_extra_outputs", [])
     use_system = effective_config.get("use_system_ytdlp") or effective_config.get("yt_dlp_path")
 
     if use_system:
@@ -2180,6 +2233,7 @@ def _run_ytdlp_direct(url, effective_config, title, allowed, output_path_overrid
         result = subprocess.run(cmd, check=False)
         if result.returncode == 0:
             log.success(f"Completed: {display_out}")
+            _copy_to_extra_paths(outtmpl, extra)
             return True
         log.error(f"yt-dlp exited with code {result.returncode}")
         return False
@@ -2194,6 +2248,7 @@ def _run_ytdlp_direct(url, effective_config, title, allowed, output_path_overrid
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
         log.success(f"Completed: {display_out}")
+        _copy_to_extra_paths(outtmpl, extra)
         return True
     except Exception as e:
         log.warn(f"yt-dlp native download failed: {e}")
@@ -2225,6 +2280,11 @@ def fetch_m3u8_and_download(url, config, output_path_override=None, per_url_over
     # output_path from per-URL overrides takes precedence
     if output_path_override is None:
         output_path_override = effective_config.pop("output_path", None)
+
+    # Split multiple output paths: first is the download target, rest get copies
+    primary_output, extra_outputs = _split_output_paths(output_path_override)
+    output_path_override = primary_output
+    effective_config["_extra_outputs"] = extra_outputs
 
     # If use_base_url_as_referrer, set referrer from the page URL
     if effective_config.get("use_base_url_as_referrer") and not effective_config.get("referrer"):

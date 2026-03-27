@@ -1,6 +1,24 @@
 #!/usr/bin/env python3
+# Copyright (C) 2026 Luke Andrew Simmons
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Affero General Public License as
+# published by the Free Software Foundation, version 3 of the License.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+# GNU Affero General Public License for more details.
+#
+# You should have received a copy of the GNU Affero General Public License
+# along with this program. If not, see <https://www.gnu.org/licenses/>.
+#
+# Luke Andrew Simmons is designated as the proxy who can decide whether
+# future versions of the GNU Affero General Public License can be used,
+# as described in Section 14 of version 3 of the license.
 
 import argparse
+import glob
 import json
 import os
 import re
@@ -27,6 +45,7 @@ class _ProgressTracker:
 
     def __init__(self, total, speed_unit="bytes", max_active=1):
         self._lock = threading.Lock()
+        self._io_lock = threading.Lock()
         self.total = total
         self.completed = 0
         self.failed = 0
@@ -46,6 +65,7 @@ class _ProgressTracker:
         self._enabled = hasattr(sys.stdout, "isatty") and sys.stdout.isatty()
         self._last_bar = ""
         self._scroll_region_set = False
+        self._output_buffer = []
 
     def setup_scroll_region(self):
         """Reserve the bottom terminal lines for download progress + summary bar."""
@@ -68,6 +88,45 @@ class _ProgressTracker:
         sys.stdout.write("\r\033[K")
         sys.stdout.flush()
         self._scroll_region_set = False
+
+    def buffer_line(self, msg):
+        """Append a message to the output buffer (thread-safe)."""
+        with self._lock:
+            self._output_buffer.append(msg)
+
+    def print_live(self, msg):
+        """Buffer a message, print it in the scroll region, and redraw the bar.
+
+        All terminal I/O is serialised via ``_io_lock`` so output from
+        yt-dlp's internal threads never interleaves with the progress bar.
+        """
+        with self._lock:
+            self._output_buffer.append(msg)
+        with self._io_lock:
+            sys.stdout.write(msg + "\n")
+            sys.stdout.flush()
+        self.draw_bar()
+
+    def flush_buffer(self):
+        """Replay all buffered output lines as normal terminal text.
+
+        In non-TTY mode (piped output) the live prints from
+        :meth:`print_live` were already permanent, so replaying would
+        duplicate them.  The replay is only needed when a scroll region
+        was active (TTY) because that output is lost on region reset.
+        """
+        with self._lock:
+            lines = list(self._output_buffer)
+            self._output_buffer.clear()
+        if not lines or not self._enabled:
+            return
+        for line in lines:
+            print(line)
+
+    def increment_total(self):
+        """Add one to the total count (for unbounded mode like clipboard watch)."""
+        with self._lock:
+            self.total += 1
 
     @property
     def remaining(self):
@@ -144,8 +203,9 @@ class _ProgressTracker:
         for row in range(first_row, term_h + 1):
             buf += f"\033[{row};0H\033[K"
         buf += "\033[u"  # restore cursor
-        sys.stdout.write(buf)
-        sys.stdout.flush()
+        with self._io_lock:
+            sys.stdout.write(buf)
+            sys.stdout.flush()
         self._last_bar = ""
 
     def _build_download_line(self, url, term_width):
@@ -281,8 +341,9 @@ class _ProgressTracker:
         buf += "\033[u"  # restore cursor
 
         self._last_bar = summary_line
-        sys.stdout.write(buf)
-        sys.stdout.flush()
+        with self._io_lock:
+            sys.stdout.write(buf)
+            sys.stdout.flush()
 
     def _format_time(self, seconds):
         m, s = divmod(int(seconds), 60)
@@ -317,12 +378,8 @@ class _Style:
     @classmethod
     def _print(cls, msg):
         """Print a message, handling progress bar if active."""
-        global _tracker
         if _tracker is not None:
-            # Text prints normally inside the scroll region;
-            # the pinned bottom bar stays untouched.
-            print(msg)
-            _tracker.draw_bar()
+            _tracker.print_live(msg)
         else:
             print(msg)
 
@@ -392,6 +449,109 @@ def _resolve_default_file(filename):
     return filename
 
 
+def _split_output_paths(output_path):
+    """Split an output_path value into the primary path and extra copy destinations.
+
+    Accepts a string, a list of strings, or None.
+    Returns ``(primary, extras)`` where *primary* is a single string (or None)
+    and *extras* is a list of additional directory paths to copy into.
+    """
+    if output_path is None:
+        return None, []
+    if isinstance(output_path, str):
+        return output_path, []
+    paths = list(output_path)
+    if not paths:
+        return None, []
+    return paths[0], paths[1:]
+
+
+def _copy_to_extra_paths(outtmpl, extra_paths):
+    """Copy downloaded file(s) matching *outtmpl* into each extra directory.
+
+    *outtmpl* is the yt-dlp output template (e.g. ``downloads/Title.%(ext)s``).
+    The ``%(ext)s`` placeholder is replaced with a glob wildcard to find the
+    actual file(s) that were created (video, subtitles, thumbnail, etc.).
+    """
+    if not extra_paths:
+        return
+    pattern = outtmpl.replace("%(ext)s", "*")
+    files = glob.glob(pattern)
+    if not files:
+        return
+    for dest_dir in extra_paths:
+        if dest_dir.endswith(os.sep) or not os.path.splitext(dest_dir)[1]:
+            os.makedirs(dest_dir, exist_ok=True)
+        for src in files:
+            dest = os.path.join(dest_dir, os.path.basename(src))
+            try:
+                shutil.copy2(src, dest)
+                log.detail(f"Copied to {dest}")
+            except Exception as e:
+                log.warn(f"Failed to copy to {dest}: {e}")
+
+
+def _expand_paths(paths, extensions, max_depth=None):
+    """Expand a list of file/directory paths into individual file paths.
+
+    For each entry in *paths*:
+
+    - If it is a file, include it as-is.
+    - If it is a directory, recursively include every file whose
+        extension (lower-cased) is in *extensions*.  Files are sorted
+        alphabetically at each directory level so that numeric prefixes
+        like ``01-``, ``02-`` control ordering.
+    - Otherwise, include it as-is (downstream code reports the error).
+
+    *extensions* should be a set of lowercased suffixes including the
+    dot, e.g. ``{".txt"}`` or ``{".toml"}``.
+
+    *max_depth* controls how deep into subdirectories to recurse:
+
+    - ``None`` -- no limit (fully recursive).
+    - ``0`` -- directory itself only (no subdirectories).
+    - ``1`` -- direct children directories, etc.
+    """
+    expanded = []
+    for p in paths:
+        if os.path.isdir(p):
+            found = _collect_from_dir(p, extensions, max_depth, 0)
+            if not found:
+                exts = ", ".join(sorted(extensions))
+                log.warn(f"No {exts} files found in directory: {p}")
+            else:
+                expanded.extend(found)
+        else:
+            expanded.append(p)
+    return expanded
+
+
+def _collect_from_dir(dirpath, extensions, max_depth, current_depth):
+    """Recursively collect matching files from *dirpath*.
+
+    Returns a sorted list of absolute/relative file paths.
+    Directories that cannot be listed (permissions, disappearance, etc.)
+    are skipped with a warning.
+    """
+    results = []
+    try:
+        children = sorted(os.listdir(dirpath))
+    except OSError as e:
+        log.warn(f"Cannot read directory '{dirpath}': {e}")
+        return results
+    for name in children:
+        if name.startswith("."):
+            continue
+        full = os.path.join(dirpath, name)
+        if os.path.isfile(full):
+            if os.path.splitext(name)[1].lower() in extensions:
+                results.append(full)
+        elif os.path.isdir(full):
+            if max_depth is None or current_depth < max_depth:
+                results.extend(_collect_from_dir(full, extensions, max_depth, current_depth + 1))
+    return results
+
+
 DEFAULT_CONFIG_FILE = "config.toml"
 DEFAULT_URLS_FILE = "urls.txt"
 
@@ -440,6 +600,8 @@ DEFAULTS = {
     "overwrite": True,  # overwrite existing files (set False to skip)
     "ytdlp_args": None,  # extra raw arguments forwarded to yt-dlp
     "speed_unit": "bytes",  # "bytes" (KB/s, MB/s) or "bits" (Kbps, Mbps)
+    "scan_depth": 0,  # max directory recursion depth (0 = no recursion, None = unlimited)
+    "watch_use_current": True,  # download whatever is in the clipboard when watch starts
 }
 
 # Map config keys -> environment variable names
@@ -484,6 +646,8 @@ ENV_MAP = {
     "overwrite": "M3U8_OVERWRITE",
     "ytdlp_args": "M3U8_YTDLP_ARGS",
     "speed_unit": "M3U8_SPEED_UNIT",
+    "scan_depth": "M3U8_SCAN_DEPTH",
+    "watch_use_current": "M3U8_WATCH_USE_CURRENT",
 }
 
 BOOL_KEYS = {
@@ -501,6 +665,7 @@ BOOL_KEYS = {
     "video_only",
     "video_and_captions_only",
     "overwrite",
+    "watch_use_current",
 }
 
 
@@ -585,10 +750,25 @@ def build_arg_parser():
     p.add_argument(
         "-f",
         "--urls-file",
-        help="Path to file containing URLs "
-        "(default: ./urls.txt or ~/.config/m3u8-extractor/urls.txt)",
+        action="append",
+        help="Path to file or directory containing URLs (repeatable; "
+        "directories load all .txt files (use --scan-depth for recursion), sorted alphabetically; "
+        "default: ./urls.txt or ~/.config/m3u8-extractor/urls.txt)",
     )
-    p.add_argument("-o", "--output-path", help="Default output directory or filename template")
+    p.add_argument(
+        "--scan-depth",
+        type=int,
+        default=None,
+        help="Max directory recursion depth when -f or -c points to a directory "
+        "(0 = top-level only (default), 1 = one level of subdirectories, -1 = unlimited)",
+    )
+    p.add_argument(
+        "-o",
+        "--output-path",
+        action="append",
+        help="Output directory or filename template (repeatable; "
+        "first path is the download target, extras receive copies)",
+    )
     p.add_argument("--title-prefix", help="String to prepend to every output filename")
     p.add_argument(
         "--title-postfix",
@@ -801,8 +981,10 @@ def build_arg_parser():
     p.add_argument(
         "-c",
         "--config",
-        help="Path to TOML config file "
-        "(default: ./config.toml or ~/.config/m3u8-extractor/config.toml)",
+        action="append",
+        help="Path to TOML config file or directory (repeatable, later files override; "
+        "directories load all .toml files (use --scan-depth for recursion), sorted alphabetically; "
+        "default: ./config.toml or ~/.config/m3u8-extractor/config.toml)",
     )
 
     # Watch mode
@@ -818,6 +1000,18 @@ def build_arg_parser():
         type=float,
         default=1.0,
         help="Clipboard polling interval in seconds (default: 1.0)",
+    )
+    p.add_argument(
+        "--watch-use-current",
+        action="store_true",
+        default=None,
+        help="Download the current clipboard URL immediately when watch starts (default)",
+    )
+    p.add_argument(
+        "--no-watch-use-current",
+        action="store_true",
+        default=None,
+        help="Ignore the current clipboard contents when watch starts",
     )
 
     return p
@@ -866,6 +1060,8 @@ def load_cli_config(args_ns):
         "video_and_captions_only": args_ns.video_and_captions_only,
         "ytdlp_args": args_ns.ytdlp_args,
         "speed_unit": args_ns.speed_unit,
+        "scan_depth": args_ns.scan_depth,
+        "watch_use_current": args_ns.watch_use_current,
     }
     for key, val in mapping.items():
         if val is not None:
@@ -877,7 +1073,32 @@ def load_cli_config(args_ns):
     elif getattr(args_ns, "overwrite", None):
         cfg["overwrite"] = True
 
+    # Handle --watch-use-current / --no-watch-use-current pair
+    if getattr(args_ns, "no_watch_use_current", None):
+        cfg["watch_use_current"] = False
+    elif getattr(args_ns, "watch_use_current", None):
+        cfg["watch_use_current"] = True
+
     return cfg
+
+
+# Config keys whose values are filesystem paths and should have ~ expanded.
+_PATH_KEYS = {
+    "urls_file",
+    "output_path",
+    "cookies",
+    "yt_dlp_path",
+    "adblock_extension",
+}
+
+
+def _expand_user(value):
+    """Expand ``~`` in a path string or list of path strings."""
+    if isinstance(value, str):
+        return os.path.expanduser(value)
+    if isinstance(value, list):
+        return [os.path.expanduser(v) if isinstance(v, str) else v for v in value]
+    return value
 
 
 def merge_config(cli, env, toml_cfg):
@@ -886,6 +1107,12 @@ def merge_config(cli, env, toml_cfg):
     merged.update(toml_cfg)
     merged.update(env)
     merged.update(cli)
+
+    # Expand ~ in all path-like values so "~/backup" works in TOML / env / CLI.
+    for key in _PATH_KEYS:
+        if key in merged and merged[key] is not None:
+            merged[key] = _expand_user(merged[key])
+
     return merged
 
 
@@ -893,7 +1120,7 @@ def _build_per_url_parser():
     """Build a parser for per-URL and group inline options in the URLs file."""
     p = argparse.ArgumentParser(add_help=False)
     p.add_argument("url", nargs="?", default=None)
-    p.add_argument("-o", "--output", dest="output_path")
+    p.add_argument("-o", "--output", dest="output_path", action="append")
     p.add_argument("--title-prefix")
     p.add_argument("--title-postfix")
     p.add_argument("--referrer")
@@ -1024,8 +1251,96 @@ def _match_url_rules(url, url_rules):
 # ---------------------------------------------------------------------------
 # yt-dlp option builder
 # ---------------------------------------------------------------------------
-def _sanitise_title(title):
-    """Remove or replace characters that are illegal in filenames."""
+def _fs_limits(path):
+    """Return filesystem filename and path length limits for *path*.
+
+    Walks up from *path* until an existing directory is found, then queries
+    the OS for the real limits.
+
+    Returns ``(name_max, path_max, unit)`` where:
+
+    - *name_max* -- max bytes (POSIX) or characters (Windows) for a
+        single filename component (e.g. 255 on ext4, 143 on eCryptfs).
+    - *path_max* -- max bytes (POSIX) or characters (Windows) for the
+        full absolute path (e.g. 4096 on Linux, 1024 on macOS, 260 on
+        Windows).
+    - *unit* -- ``"bytes"`` on POSIX, ``"chars"`` on Windows.
+    """
+    # Resolve to an existing directory so the query succeeds
+    p = os.path.abspath(path) if path else os.getcwd()
+    while p and not os.path.isdir(p):
+        parent = os.path.dirname(p)
+        if parent == p:
+            break
+        p = parent
+
+    # POSIX ──────────────────────────────────────────────────────────────
+    name_max = None
+    path_max = None
+    try:
+        name_max = os.pathconf(p, "PC_NAME_MAX")
+    except (OSError, ValueError, AttributeError):
+        pass
+    if name_max is None:
+        try:
+            val = os.statvfs(p).f_namemax
+            if val > 0:
+                name_max = val
+        except (OSError, AttributeError):
+            pass
+    try:
+        path_max = os.pathconf(p, "PC_PATH_MAX")
+    except (OSError, ValueError, AttributeError):
+        pass
+
+    if name_max is not None:
+        return name_max, path_max or 4096, "bytes"
+
+    # Windows ────────────────────────────────────────────────────────────
+    if sys.platform == "win32":
+        try:
+            import ctypes
+
+            kernel32 = ctypes.windll.kernel32
+            max_component = ctypes.c_ulong(0)
+            root = os.path.splitdrive(p)[0] + "\\"
+            ok = kernel32.GetVolumeInformationW(
+                root, None, 0, None, ctypes.byref(max_component), None, None, 0
+            )
+            if ok and max_component.value > 0:
+                # Check if long paths are enabled (Windows 10 1607+)
+                w_path_max = 260
+                try:
+                    import winreg
+
+                    key = winreg.OpenKey(
+                        winreg.HKEY_LOCAL_MACHINE,
+                        r"SYSTEM\CurrentControlSet\Control\FileSystem",
+                    )
+                    val, _ = winreg.QueryValueEx(key, "LongPathsEnabled")
+                    if val:
+                        w_path_max = 32767
+                except Exception:
+                    pass
+                return max_component.value, w_path_max, "chars"
+        except Exception:
+            pass
+
+    return 255, 4096, "bytes"
+
+
+def _sanitise_title(title, name_max=255, name_unit="bytes", reserved=30):
+    """Remove or replace characters that are illegal in filenames.
+
+    *name_max* is the filesystem filename-component limit as returned by
+    :func:`_fs_limits`.  *name_unit* is ``"bytes"`` (POSIX — compare
+    UTF-8 encoded length) or ``"chars"`` (Windows — compare character
+    count).  *reserved* units are kept free for the extension and yt-dlp
+    temp suffixes like ``.mp4.part-Frag9999.part``.
+
+    The title is truncated (with a trailing ``…``) if it would exceed
+    ``name_max - reserved``.
+    """
     # Replace path separators and other problematic chars with a dash
     title = re.sub(r"[/\\]", " - ", title)
     # Remove characters illegal on Windows/Linux/macOS: : * ? " < > |
@@ -1033,24 +1348,94 @@ def _sanitise_title(title):
     # Collapse multiple spaces/dashes
     title = re.sub(r"\s{2,}", " ", title).strip()
     title = re.sub(r"-{2,}", "-", title).strip(" -")
-    return title or "video"
+    title = title or "video"
+
+    # Truncate to stay under the filesystem limit
+    limit = name_max - reserved
+    if name_unit == "chars":
+        # Windows: limit is in UTF-16 characters ≈ Python str length
+        ellipsis_cost = 1  # "…" is 1 character
+        measure = len
+    else:
+        # POSIX: limit is in bytes (UTF-8 on modern systems)
+        ellipsis_cost = 3  # "…" is 3 UTF-8 bytes
+
+        def measure(s):
+            return len(s.encode("utf-8"))
+
+    if measure(title) > limit:
+        while measure(title) > limit - ellipsis_cost:
+            title = title[:-1]
+        title = title.rstrip() + "…"
+
+    return title
 
 
 def _resolve_outtmpl(config, title, output_path_override):
-    """Determine the output template string."""
+    """Determine the output template string.
+
+    Enforces both the filename-component limit (``NAME_MAX``) and the
+    full-path limit (``PATH_MAX``) for the target filesystem, truncating
+    the title further if the assembled absolute path would be too long.
+    """
     prefix = config.get("title_prefix", "")
     postfix = config.get("title_postfix", "")
-    effective_title = _sanitise_title(f"{prefix}{title}{postfix}")
 
     out = output_path_override or config.get("output_path")
+
+    # Determine the output directory to query its filesystem limits
+    if out and (out.endswith(os.sep) or os.path.isdir(out)):
+        out_dir = out
+    elif out:
+        out_dir = os.path.dirname(out) or "."
+    else:
+        out_dir = "."
+
+    name_max, path_max, name_unit = _fs_limits(out_dir)
+
+    # --- Pass 1: enforce NAME_MAX (filename component) ---
+    effective_title = _sanitise_title(
+        f"{prefix}{title}{postfix}", name_max=name_max, name_unit=name_unit
+    )
+
     if not out:
-        return f"{effective_title}.%(ext)s"
+        outtmpl = f"{effective_title}.%(ext)s"
+    elif out.endswith(os.sep) or os.path.isdir(out):
+        outtmpl = os.path.join(out, f"{effective_title}.%(ext)s")
+    else:
+        _, ext = os.path.splitext(out)
+        return out if ext else f"{out}.%(ext)s"
 
-    if out.endswith(os.sep) or os.path.isdir(out):
-        return os.path.join(out, f"{effective_title}.%(ext)s")
+    # --- Pass 2: enforce PATH_MAX (full absolute path) ---
+    # Estimate the worst-case full path length using a realistic max
+    # extension + yt-dlp temp suffix (e.g. ".webm.part-Frag9999.part").
+    suffix_budget = 30  # same as the NAME_MAX reserved amount
+    abs_path = os.path.abspath(outtmpl.replace("%(ext)s", "x" * 5))
+    if name_unit == "chars":
+        measure = len
+        ellipsis_cost = 1
+    else:
 
-    _, ext = os.path.splitext(out)
-    return out if ext else f"{out}.%(ext)s"
+        def measure(s):
+            return len(s.encode("utf-8"))
+
+        ellipsis_cost = 3
+
+    path_len = measure(abs_path) + suffix_budget
+    if path_len > path_max:
+        # How much the title needs to shrink
+        overshoot = path_len - path_max
+        title_raw = f"{prefix}{title}{postfix}"
+        # Re-sanitise with a tighter name_max to shave off the overshoot
+        tighter = name_max - overshoot - ellipsis_cost
+        tighter = max(tighter, 20)  # absolute floor so filenames stay readable
+        effective_title = _sanitise_title(title_raw, name_max=tighter, name_unit=name_unit)
+        if not out:
+            outtmpl = f"{effective_title}.%(ext)s"
+        else:
+            outtmpl = os.path.join(out, f"{effective_title}.%(ext)s")
+
+    return outtmpl
 
 
 def _display_outtmpl(outtmpl):
@@ -1169,8 +1554,39 @@ def build_ydl_opts(config, title, output_path_override=None):
         except Exception as e:
             log.warn(f"Could not parse ytdlp_args for library mode: {e}")
 
-    # Progress tracking (when running in batch/parallel mode)
+    # Capture yt-dlp log output when our tracker is active
     tracker = _tracker
+    if tracker is not None:
+
+        class _TrackerLogger:
+            """yt-dlp logger that shows messages live and buffers for replay."""
+
+            _DL_PROGRESS_RE = re.compile(r"^\[download\]\s+\d+(\.\d+)?%\s+(of|at|in)\s")
+
+            def __init__(self, t):
+                self._t = t
+
+            def _emit(self, msg):
+                if not self._t:
+                    return
+                # Filter out [download] percentage-progress lines — our
+                # tracker already shows that information live.
+                if self._DL_PROGRESS_RE.match(msg):
+                    return
+                self._t.print_live(msg)
+
+            def debug(self, msg):
+                self._emit(msg)
+
+            def warning(self, msg):
+                self._emit(f"WARNING: {msg}")
+
+            def error(self, msg):
+                self._emit(f"ERROR: {msg}")
+
+        opts["logger"] = _TrackerLogger(tracker)
+
+    # Progress tracking (when running in batch/parallel mode)
     if tracker is not None:
         src_url = config.get("_tracker_url", "")
 
@@ -1959,6 +2375,7 @@ def _select_video_urls(video_urls, config, page_url):
 
 def _download_m3u8(m3u8_url, effective_config, page_title, output_path_override):
     """Download a single m3u8 URL using either the library or system yt-dlp."""
+    extra = effective_config.get("_extra_outputs", [])
     use_system = effective_config.get("use_system_ytdlp") or effective_config.get("yt_dlp_path")
     if use_system:
         cmd, outtmpl = _build_system_ytdlp_cmd(
@@ -1969,6 +2386,7 @@ def _download_m3u8(m3u8_url, effective_config, page_title, output_path_override)
         result = subprocess.run(cmd, check=False)
         if result.returncode == 0:
             log.success(f"Completed: {display_out}")
+            _copy_to_extra_paths(outtmpl, extra)
         else:
             log.error(f"yt-dlp exited with code {result.returncode}")
     else:
@@ -1978,6 +2396,7 @@ def _download_m3u8(m3u8_url, effective_config, page_title, output_path_override)
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([m3u8_url])
         log.success(f"Completed: {display_out}")
+        _copy_to_extra_paths(outtmpl, extra)
 
 
 def _try_ytdlp_direct(url, effective_config, output_path_override=None):
@@ -2023,6 +2442,7 @@ def _probe_ytdlp(url, config, allowed):
 
 def _run_ytdlp_direct(url, effective_config, title, allowed, output_path_override):
     """Run yt-dlp natively on a URL (after a successful probe)."""
+    extra = effective_config.get("_extra_outputs", [])
     use_system = effective_config.get("use_system_ytdlp") or effective_config.get("yt_dlp_path")
 
     if use_system:
@@ -2036,6 +2456,7 @@ def _run_ytdlp_direct(url, effective_config, title, allowed, output_path_overrid
         result = subprocess.run(cmd, check=False)
         if result.returncode == 0:
             log.success(f"Completed: {display_out}")
+            _copy_to_extra_paths(outtmpl, extra)
             return True
         log.error(f"yt-dlp exited with code {result.returncode}")
         return False
@@ -2050,6 +2471,7 @@ def _run_ytdlp_direct(url, effective_config, title, allowed, output_path_overrid
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
         log.success(f"Completed: {display_out}")
+        _copy_to_extra_paths(outtmpl, extra)
         return True
     except Exception as e:
         log.warn(f"yt-dlp native download failed: {e}")
@@ -2081,6 +2503,11 @@ def fetch_m3u8_and_download(url, config, output_path_override=None, per_url_over
     # output_path from per-URL overrides takes precedence
     if output_path_override is None:
         output_path_override = effective_config.pop("output_path", None)
+
+    # Split multiple output paths: first is the download target, rest get copies
+    primary_output, extra_outputs = _split_output_paths(output_path_override)
+    output_path_override = primary_output
+    effective_config["_extra_outputs"] = extra_outputs
 
     # If use_base_url_as_referrer, set referrer from the page URL
     if effective_config.get("use_base_url_as_referrer") and not effective_config.get("referrer"):
@@ -2246,8 +2673,8 @@ def _print_summary(results, elapsed):
     sys.stdout.flush()
 
 
-def download_from_file(file_path, config):
-    """Read URLs from a file and download each one.
+def download_from_file(file_paths, config):
+    """Read URLs from one or more files and download each one.
 
     Supports group directives to set options for blocks of URLs:
         --- --audio-only --quality best
@@ -2256,41 +2683,51 @@ def download_from_file(file_path, config):
         ---
         https://example.com/video   # group reset, back to global defaults
     """
+    if isinstance(file_paths, str):
+        file_paths = [file_paths]
+
     per_url_parser = _build_per_url_parser()
     try:
-        with open(file_path, "r") as f:
-            lines = f.readlines()
-
         entries = []
-        group_overrides = {}
 
-        for line in lines:
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-
-            # Group directive: --- [options]
-            if line.startswith("---"):
-                group_overrides = _parse_group_directive(line, per_url_parser)
-                if group_overrides:
-                    flags = " ".join(f"{k}={v}" for k, v in group_overrides.items())
-                    log.info(f"Group options set: {flags}")
-                else:
-                    log.info("Group options reset")
-                continue
-
+        for file_path in file_paths:
             try:
-                url, url_overrides = _parse_url_line(line, per_url_parser)
-                # Merge: group options first, then per-URL overrides on top
-                merged = dict(group_overrides)
-                merged.update(url_overrides)
-                entries.append((url, merged))
-            except SystemExit:
-                log.warn(f"Could not parse line: {line}")
+                with open(file_path, "r") as f:
+                    lines = f.readlines()
+            except FileNotFoundError:
+                log.error(f"File not found: '{file_path}'")
                 continue
+
+            # Reset group overrides between files
+            group_overrides = {}
+
+            for line in lines:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+
+                # Group directive: --- [options]
+                if line.startswith("---"):
+                    group_overrides = _parse_group_directive(line, per_url_parser)
+                    if group_overrides:
+                        flags = " ".join(f"{k}={v}" for k, v in group_overrides.items())
+                        log.info(f"Group options set: {flags}")
+                    else:
+                        log.info("Group options reset")
+                    continue
+
+                try:
+                    url, url_overrides = _parse_url_line(line, per_url_parser)
+                    # Merge: group options first, then per-URL overrides on top
+                    merged = dict(group_overrides)
+                    merged.update(url_overrides)
+                    entries.append((url, merged))
+                except SystemExit:
+                    log.warn(f"Could not parse line: {line}")
+                    continue
 
         if not entries:
-            log.warn("No URLs found in the file.")
+            log.warn("No URLs found in the file(s).")
             return
 
         workers = _resolve_worker_count(config.get("parallel"), len(entries))
@@ -2304,22 +2741,39 @@ def download_from_file(file_path, config):
         global _tracker
 
         if workers <= 1 or len(entries) == 1:
-            # Single-worker mode: avoid reserved terminal bottom lines,
-            # which can hide previous output in some shells/themes.
-            _tracker = None
+            _tracker = _ProgressTracker(
+                len(entries),
+                speed_unit=config.get("speed_unit", "bytes"),
+                max_active=1,
+            )
+            _tracker.setup_scroll_region()
             for i, (url, overrides) in enumerate(entries, 1):
                 log.step(f"[{i}/{len(entries)}] {url}")
                 try:
                     ok, err = fetch_m3u8_and_download(url, config, per_url_overrides=overrides)
                     results.append((url, ok, err))
+                    if ok:
+                        _tracker.record_success()
+                    else:
+                        _tracker.record_failure()
                 except Exception as exc:
                     log.error(f"Failed: {url} — {exc}")
                     results.append((url, False, str(exc)))
+                    _tracker.record_failure()
+                finally:
+                    _tracker.finish_bytes(url)
+                    _tracker.draw_bar()
+            tracker_ref = _tracker
+            tracker_ref.reset_scroll_region()
             _tracker = None
+            tracker_ref.flush_buffer()
         else:
-            # Disable the live terminal tracker in parallel mode to avoid
-            # shell-dependent screen corruption/scroll-region issues.
-            _tracker = None
+            _tracker = _ProgressTracker(
+                len(entries),
+                speed_unit=config.get("speed_unit", "bytes"),
+                max_active=workers,
+            )
+            _tracker.setup_scroll_region()
             with ThreadPoolExecutor(max_workers=workers) as pool:
                 futures = {
                     pool.submit(fetch_m3u8_and_download, url, config, None, overrides): url
@@ -2330,18 +2784,27 @@ def download_from_file(file_path, config):
                     try:
                         ok, err = future.result()
                         results.append((src_url, ok, err))
+                        if ok:
+                            _tracker.record_success()
+                        else:
+                            _tracker.record_failure()
                     except Exception as exc:
                         log.error(f"Failed: {src_url} — {exc}")
                         results.append((src_url, False, str(exc)))
+                        _tracker.record_failure()
+                    finally:
+                        _tracker.finish_bytes(src_url)
+                        _tracker.draw_bar()
+            tracker_ref = _tracker
+            tracker_ref.reset_scroll_region()
             _tracker = None
+            tracker_ref.flush_buffer()
 
         elapsed = time.time() - start_time
         _print_summary(results, elapsed)
 
-    except FileNotFoundError:
-        log.error(f"File not found: '{file_path}'")
     except Exception as e:
-        log.error(f"An error occurred while reading the file: {e}")
+        log.error(f"An error occurred while reading the file(s): {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -2351,6 +2814,7 @@ def _read_clipboard():
     """Read the current clipboard text. Returns empty string on failure."""
     # Try platform-specific commands
     for cmd in (
+        "wl-paste",
         "xclip -selection clipboard -o",
         "xsel --clipboard --output",
         "pbpaste",
@@ -2376,19 +2840,78 @@ def _looks_like_url(text):
 
 
 def watch_clipboard(config, interval=1.0):
-    """Poll the clipboard for new URLs and download them automatically."""
+    """Poll the clipboard for new URLs and download them automatically.
+
+    Downloads run in a thread pool so new clipboard URLs are picked up
+    immediately without waiting for the current download to finish.
+    The ``parallel`` config controls the maximum number of concurrent
+    downloads.
+    """
+    use_current = config.get("watch_use_current", True)
     log.header("Watching clipboard for URLs  (Ctrl+C to stop)")
     seen = set()
     last_text = ""
+    initial_url = None
+    results = []
 
-    # Prime with current clipboard so we don't immediately download
-    # whatever is already there
+    # Read the current clipboard
     last_text = _read_clipboard()
     if _looks_like_url(last_text):
-        seen.add(last_text.strip().split("\n")[0])
+        url = last_text.strip().split("\n")[0]
+        if use_current:
+            initial_url = url
+        else:
+            # Just mark it seen so we don't download it later
+            seen.add(url)
+
+    # Resolve worker count — "all" has no fixed total in watch mode,
+    # so cap at a generous upper bound.
+    max_workers = min(32, _resolve_worker_count(config.get("parallel", "all"), 32))
+    log.info(f"Parallel slots: {max_workers}")
+
+    global _tracker
+    _tracker = _ProgressTracker(
+        total=0,
+        speed_unit=config.get("speed_unit", "bytes"),
+        max_active=max_workers,
+    )
+    _tracker.setup_scroll_region()
+
+    pool = ThreadPoolExecutor(max_workers=max_workers)
+    futures = {}  # future -> url
+    start_time = time.time()
+
+    # Submit the initial clipboard URL if configured
+    if initial_url:
+        seen.add(initial_url)
+        _tracker.increment_total()
+        log.info(f"Current clipboard URL: {initial_url}")
+        future = pool.submit(fetch_m3u8_and_download, initial_url, config)
+        futures[future] = initial_url
+        _tracker.draw_bar()
 
     try:
         while True:
+            # Collect completed downloads
+            done = [f for f in futures if f.done()]
+            for f in done:
+                url = futures.pop(f)
+                try:
+                    ok, err = f.result()
+                    results.append((url, ok, err))
+                    if ok:
+                        _tracker.record_success()
+                    else:
+                        _tracker.record_failure()
+                except Exception as exc:
+                    log.error(f"Failed: {url} — {exc}")
+                    results.append((url, False, str(exc)))
+                    _tracker.record_failure()
+                finally:
+                    _tracker.finish_bytes(url)
+                    _tracker.draw_bar()
+
+            # Poll clipboard
             time.sleep(interval)
             text = _read_clipboard()
             if not text or text == last_text:
@@ -2403,16 +2926,50 @@ def watch_clipboard(config, interval=1.0):
                 continue
 
             seen.add(url)
+            _tracker.increment_total()
             log.info(f"Clipboard URL detected: {url}")
-            try:
-                ok, err = fetch_m3u8_and_download(url, config)
-                if not ok:
-                    log.error(f"Failed: {url} — {err}")
-            except Exception as exc:
-                log.error(f"Failed: {url} — {exc}")
+            future = pool.submit(fetch_m3u8_and_download, url, config)
+            futures[future] = url
+            _tracker.draw_bar()
 
     except KeyboardInterrupt:
-        log.header(f"Stopped. Downloaded {len(seen)} URL(s).")
+        active = sum(1 for f in futures if not f.done())
+        if active:
+            log.info(f"Waiting for {active} active download(s) to finish…")
+    finally:
+        # Cancel queued-but-not-started tasks; wait for running ones
+        pool.shutdown(wait=True, cancel_futures=True)
+
+        # Collect results from any futures that finished during shutdown
+        for f, url in list(futures.items()):
+            if (
+                f.done()
+                and (url, True, None) not in results
+                and not any(r[0] == url for r in results)
+            ):
+                try:
+                    ok, err = f.result()
+                    results.append((url, ok, err))
+                    if ok:
+                        _tracker.record_success()
+                    else:
+                        _tracker.record_failure()
+                except Exception as exc:
+                    results.append((url, False, str(exc)))
+                    _tracker.record_failure()
+                finally:
+                    _tracker.finish_bytes(url)
+
+        tracker_ref = _tracker
+        tracker_ref.reset_scroll_region()
+        _tracker = None
+        tracker_ref.flush_buffer()
+
+        elapsed = time.time() - start_time
+        if results:
+            _print_summary(results, elapsed)
+        else:
+            log.header(f"Stopped. No downloads completed ({len(seen)} URL(s) seen).")
 
 
 # ---------------------------------------------------------------------------
@@ -2422,9 +2979,29 @@ def main():
     parser = build_arg_parser()
     args = parser.parse_args()
 
-    # Resolve config file: explicit flag > CWD > user config dir
-    toml_path = args.config or _resolve_default_file(DEFAULT_CONFIG_FILE)
-    toml_cfg = load_toml_config(toml_path)
+    # Resolve config file(s): explicit flag > CWD > user config dir
+    config_paths = args.config or [_resolve_default_file(DEFAULT_CONFIG_FILE)]
+    config_paths_depth = 0  # default: no recursion into subdirectories
+    # If --scan-depth was given on the CLI, use it for config expansion too
+    if args.scan_depth is not None:
+        config_paths_depth = args.scan_depth if args.scan_depth >= 0 else None
+    config_paths = _expand_paths(config_paths, {".toml"}, max_depth=config_paths_depth)
+    toml_cfg = {}
+    _DICT_MERGE_KEYS = {"headers", "cookies", "localstorage"}
+    for _cfg_path in config_paths:
+        _one = load_toml_config(_cfg_path)
+        # Combine url_rules across configs rather than replacing
+        if "_url_rules" in _one and "_url_rules" in toml_cfg:
+            toml_cfg["_url_rules"] = toml_cfg["_url_rules"] + _one.pop("_url_rules")
+        # Deep-merge dict-type keys so entries accumulate across files
+        for _dk in _DICT_MERGE_KEYS:
+            if _dk in _one and isinstance(_one[_dk], dict):
+                if _dk in toml_cfg and isinstance(toml_cfg[_dk], dict):
+                    merged = dict(toml_cfg[_dk])
+                    merged.update(_one.pop(_dk))
+                    toml_cfg[_dk] = merged
+        toml_cfg.update(_one)
+
     env_cfg = load_env_config()
     cli_cfg = load_cli_config(args)
 
@@ -2443,9 +3020,17 @@ def main():
         elapsed = time.time() - start_time
         _print_summary(results, elapsed)
     else:
-        # Batch download from file
-        urls_file = _resolve_default_file(config["urls_file"])
-        download_from_file(urls_file, config)
+        # Batch download from file(s)
+        urls_files = config.get("urls_file", DEFAULT_URLS_FILE)
+        if isinstance(urls_files, str):
+            urls_files = [urls_files]
+        resolved = [_resolve_default_file(f) for f in urls_files]
+        scan_depth = config.get("scan_depth", 0)
+        scan_depth = int(scan_depth)
+        if scan_depth < 0:
+            scan_depth = None
+        resolved = _expand_paths(resolved, {".txt"}, max_depth=scan_depth)
+        download_from_file(resolved, config)
 
 
 if __name__ == "__main__":

@@ -3,8 +3,12 @@
 
 # ── Paths ────────────────────────────────────────────────────────────────────
 
-# urls_file = "urls.txt"               # Path to the URL list file
+# urls_file = "urls.txt"               # Path to the URL list file (string or list)
+# urls_file = ["batch1.txt", "batch2.txt"]  # Multiple files
+# urls_file = "url-batches/"           # A directory of .txt files
+
 # output_path = "downloads/"           # Default output directory or filename template
+# output_path = ["downloads/", "/mnt/backup/"]  # Multiple: first is target, extras get copies
 
 # ── Title ────────────────────────────────────────────────────────────────────
 
@@ -63,6 +67,7 @@
 
 # parallel = "all"                     # "all", a number, "cores", or "logical_cores"
 # speed_unit = "bytes"                 # "bytes" (KB/s, MB/s) or "bits" (Kbps, Mbps)
+# scan_depth = 0                       # Directory recursion depth (0 = top-level, -1 = unlimited)
 
 # ── m3u8 selection ───────────────────────────────────────────────────────────
 
@@ -88,6 +93,10 @@
 # video_only = false                   # Download only the video stream (no audio)
 # video_and_captions_only = false      # Download video and captions only (no audio)
 # overwrite = true                     # Overwrite existing files (false to skip)
+
+# ── Watch mode ───────────────────────────────────────────────────────────────
+
+# watch_use_current = true             # Download current clipboard URL when --watch starts
 
 # ── URL rules ────────────────────────────────────────────────────────────────
 # Pattern-matched per-site config. All matching rules are merged in order.

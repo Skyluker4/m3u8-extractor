@@ -15,8 +15,10 @@ URL to yt-dlp for reliable downloading.
   and TOML config file (priority: CLI > env > TOML > defaults)
 - **URL rules** — pattern-matched per-site config in TOML
   (e.g. always use audio-only for music sites)
-- **Batch downloads** — read URLs from a file, with per-URL
-  and group option overrides
+- **Batch downloads** — read URLs from one or more files (or
+  directories of files), with per-URL and group option overrides
+- **Multiple output paths** — save downloads to several
+  directories at once (first is primary, extras receive copies)
 - **Parallel downloads** — download all URLs simultaneously
   by default, or limit concurrency
 - **Clipboard watch mode** — monitors clipboard for URLs and
@@ -76,20 +78,21 @@ a file (`urls.txt` by default).
 
 ### General options
 
-| Flag                         | Description                                            |
-| ---------------------------- | ------------------------------------------------------ |
-| `url`                        | URL to download directly (positional, optional)        |
-| `-f`, `--urls-file`          | Path to URL list file                                  |
-| `-o`, `--output-path`        | Output directory or filename template                  |
-| `--title-prefix`             | String to prepend to every filename                    |
-| `--title-postfix`            | String to append to every filename (before extension)  |
-| `--referrer`                 | Referer header for requests                            |
-| `--use-base-url-as-referrer` | Auto-set referer from each page's base URL             |
-| `--cookies`                  | Path to Netscape-format cookies file                   |
-| `--user-agent`               | Custom User-Agent for yt-dlp and browser requests      |
-| `-q`, `--quality`            | yt-dlp format selector (e.g. `bestvideo+bestaudio`)    |
-| `--transcode`                | Transcode to format after download (e.g. `mp4`, `mkv`) |
-| `-c`, `--config`             | Path to TOML config file                               |
+| Flag                         | Description                                                                                                                 |
+| ---------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `url`                        | URL to download directly (positional, optional)                                                                             |
+| `-f`, `--urls-file`          | Path to URL list file or directory (repeatable; directories load all `.txt` files)                                          |
+| `-o`, `--output-path`        | Output directory or filename template (repeatable; first is download target, extras receive copies)                         |
+| `--title-prefix`             | String to prepend to every filename                                                                                         |
+| `--title-postfix`            | String to append to every filename (before extension)                                                                       |
+| `--referrer`                 | Referer header for requests                                                                                                 |
+| `--use-base-url-as-referrer` | Auto-set referer from each page's base URL                                                                                  |
+| `--cookies`                  | Path to Netscape-format cookies file                                                                                        |
+| `--user-agent`               | Custom User-Agent for yt-dlp and browser requests                                                                           |
+| `-q`, `--quality`            | yt-dlp format selector (e.g. `bestvideo+bestaudio`)                                                                         |
+| `--transcode`                | Transcode to format after download (e.g. `mp4`, `mkv`)                                                                      |
+| `-c`, `--config`             | Path to TOML config file or directory (repeatable, later files override; directories load all `.toml` files)                |
+| `--scan-depth`               | Max directory recursion depth for `-f`/`-c` directories (`0` = top-level only (default), `1` = one level, `-1` = unlimited) |
 
 ### Download modes
 
@@ -120,6 +123,7 @@ a file (`urls.txt` by default).
 | ------------------ | ------------------------------------------------------------------------------------ |
 | `-p`, `--parallel` | Number of parallel downloads: a number, `all` (default), `cores`, or `logical_cores` |
 | `--speed-unit`     | Speed display in progress bar: `bytes` (default, e.g. MB/s) or `bits` (e.g. Mbps)    |
+| `--scan-depth`     | Max recursion depth when `-f` or `-c` is a directory (default `0`, `-1` = unlimited) |
 
 ### Stream selection
 
@@ -181,10 +185,12 @@ Selenium and yt-dlp for auth-gated pages.
 
 ### Watch mode
 
-| Flag               | Description                                         |
-| ------------------ | --------------------------------------------------- |
-| `-w`, `--watch`    | Watch clipboard for URLs and download automatically |
-| `--watch-interval` | Polling interval in seconds (default: `1.0`)        |
+| Flag                     | Description                                                                |
+| ------------------------ | -------------------------------------------------------------------------- |
+| `-w`, `--watch`          | Watch clipboard for URLs and download automatically                        |
+| `--watch-interval`       | Polling interval in seconds (default: `1.0`)                               |
+| `--watch-use-current`    | Download the current clipboard URL immediately when watch starts (default) |
+| `--no-watch-use-current` | Ignore the current clipboard contents when watch starts                    |
 
 ## Configuration
 
@@ -206,14 +212,16 @@ Place a `config.toml` in the current directory or
 ```toml
 # config.toml
 
-urls_file = "urls.txt"
-output_path = "downloads/"
+urls_file = "urls.txt"                # or a list: ["batch1.txt", "batch2.txt"]
+output_path = "downloads/"            # or a list: ["downloads/", "/mnt/backup/"]
 title_prefix = ""
 title_postfix = ""
 quality = "bestvideo+bestaudio"
 transcode = "mp4"
 parallel = "all"
 speed_unit = "bytes"   # "bytes" (KB/s, MB/s) or "bits" (Kbps, Mbps)
+scan_depth = 0         # directory recursion depth (0 = top-level, -1 = unlimited)
+watch_use_current = true  # download current clipboard URL when --watch starts
 
 referrer = ""
 use_base_url_as_referrer = false
@@ -318,6 +326,8 @@ M3U8_CAPTIONS_ONLY=false
 M3U8_AUDIO_ONLY=false
 M3U8_VIDEO_ONLY=false
 M3U8_VIDEO_AND_CAPTIONS_ONLY=false
+M3U8_SCAN_DEPTH=0
+M3U8_WATCH_USE_CURRENT=true
 ```
 
 Boolean values accept `1`, `true`, `yes`, `on` (case-insensitive).
@@ -330,6 +340,58 @@ Both `config.toml` and `urls.txt` are searched in order:
 2. `~/.config/m3u8-extractor/` (respects `$XDG_CONFIG_HOME`)
 
 Use `-c` or `-f` to specify an explicit path.
+
+#### Multiple files and directories
+
+`-f` and `-c` are repeatable and accept directories:
+
+```bash
+# Multiple URL files
+m3u8-extractor -f batch1.txt -f batch2.txt
+
+# A directory of URL files (loads all .txt files, sorted alphabetically)
+m3u8-extractor -f ~/url-batches/
+
+# A directory of config files (loads all .toml files, later override earlier)
+m3u8-extractor -c /etc/m3u8-extractor/conf.d/
+
+# Control recursion depth (default: 0 = top-level only)
+m3u8-extractor -f ~/url-batches/ --scan-depth 1    # one level of subdirs
+m3u8-extractor -f ~/url-batches/ --scan-depth -1   # unlimited recursion
+
+# Mix files and directories freely
+m3u8-extractor -f batch1.txt -f ~/more-urls/ -c base.toml -c ~/overrides.d/
+```
+
+Files within a directory are sorted alphabetically, so numeric
+prefixes like `01-music.txt`, `02-videos.txt` control ordering.
+Hidden files (starting with `.`) are skipped.
+
+TOML config also supports lists:
+
+```toml
+urls_file = ["batch1.txt", "batch2.txt"]
+# or a directory
+urls_file = "url-batches/"
+```
+
+#### Multiple output paths
+
+`-o` is repeatable. The first path is the download target; after
+each successful download, files are copied to every additional path:
+
+```bash
+m3u8-extractor -o downloads/ -o /mnt/nas/videos/ -o ~/backup/
+```
+
+TOML config also supports a list:
+
+```toml
+output_path = ["downloads/", "/mnt/nas/videos/", "~/backup/"]
+```
+
+All related files (video, subtitles, thumbnails) are copied.
+Destination directories are created automatically.
 
 ## URL list format
 
@@ -351,7 +413,12 @@ https://example.com/video5 -o "downloads/" --thumbnail --transcode mkv
 ```
 
 Per-URL flags override the global config for that specific
-download. All CLI flags are supported.
+download. All CLI flags are supported, including repeatable
+`-o` for multiple output paths:
+
+```text
+https://example.com/important -o downloads/ -o /mnt/backup/
+```
 
 ### Group directives
 
@@ -402,6 +469,19 @@ m3u8-extractor --audio-only \
 
 # Watch clipboard, download captions too
 m3u8-extractor --watch --captions
+
+# Watch clipboard but skip whatever is currently copied
+m3u8-extractor --watch --no-watch-use-current
+
+# Save to multiple locations
+m3u8-extractor -o downloads/ -o /mnt/nas/videos/ \
+  "https://example.com/video"
+
+# Batch from a directory of URL files
+m3u8-extractor -f ~/url-batches/
+
+# Multiple configs: base + overrides
+m3u8-extractor -c base.toml -c site-overrides.toml
 
 # Use system yt-dlp at a custom path
 m3u8-extractor --yt-dlp-path /opt/bin/yt-dlp "https://example.com/video"

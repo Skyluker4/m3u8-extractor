@@ -1191,8 +1191,95 @@ def _match_url_rules(url, url_rules):
 # ---------------------------------------------------------------------------
 # yt-dlp option builder
 # ---------------------------------------------------------------------------
-def _sanitise_title(title):
-    """Remove or replace characters that are illegal in filenames."""
+def _fs_limits(path):
+    """Return filesystem filename and path length limits for *path*.
+
+    Walks up from *path* until an existing directory is found, then queries
+    the OS for the real limits.
+
+    Returns ``(name_max, path_max, unit)`` where:
+
+    - *name_max* — max bytes (POSIX) or characters (Windows) for a single
+      filename component (e.g. 255 on ext4, 143 on eCryptfs).
+    - *path_max* — max bytes (POSIX) or characters (Windows) for the full
+      absolute path (e.g. 4096 on Linux, 1024 on macOS, 260 on Windows).
+    - *unit* — ``"bytes"`` on POSIX, ``"chars"`` on Windows.
+    """
+    # Resolve to an existing directory so the query succeeds
+    p = os.path.abspath(path) if path else os.getcwd()
+    while p and not os.path.isdir(p):
+        parent = os.path.dirname(p)
+        if parent == p:
+            break
+        p = parent
+
+    # POSIX ──────────────────────────────────────────────────────────────
+    name_max = None
+    path_max = None
+    try:
+        name_max = os.pathconf(p, "PC_NAME_MAX")
+    except (OSError, ValueError, AttributeError):
+        pass
+    if name_max is None:
+        try:
+            val = os.statvfs(p).f_namemax
+            if val > 0:
+                name_max = val
+        except (OSError, AttributeError):
+            pass
+    try:
+        path_max = os.pathconf(p, "PC_PATH_MAX")
+    except (OSError, ValueError, AttributeError):
+        pass
+
+    if name_max is not None:
+        return name_max, path_max or 4096, "bytes"
+
+    # Windows ────────────────────────────────────────────────────────────
+    if sys.platform == "win32":
+        try:
+            import ctypes
+
+            kernel32 = ctypes.windll.kernel32
+            max_component = ctypes.c_ulong(0)
+            root = os.path.splitdrive(p)[0] + "\\"
+            ok = kernel32.GetVolumeInformationW(
+                root, None, 0, None, ctypes.byref(max_component), None, None, 0
+            )
+            if ok and max_component.value > 0:
+                # Check if long paths are enabled (Windows 10 1607+)
+                w_path_max = 260
+                try:
+                    import winreg
+
+                    key = winreg.OpenKey(
+                        winreg.HKEY_LOCAL_MACHINE,
+                        r"SYSTEM\CurrentControlSet\Control\FileSystem",
+                    )
+                    val, _ = winreg.QueryValueEx(key, "LongPathsEnabled")
+                    if val:
+                        w_path_max = 32767
+                except Exception:
+                    pass
+                return max_component.value, w_path_max, "chars"
+        except Exception:
+            pass
+
+    return 255, 4096, "bytes"
+
+
+def _sanitise_title(title, name_max=255, name_unit="bytes", reserved=30):
+    """Remove or replace characters that are illegal in filenames.
+
+    *name_max* is the filesystem filename-component limit as returned by
+    :func:`_fs_limits`.  *name_unit* is ``"bytes"`` (POSIX — compare
+    UTF-8 encoded length) or ``"chars"`` (Windows — compare character
+    count).  *reserved* units are kept free for the extension and yt-dlp
+    temp suffixes like ``.mp4.part-Frag9999.part``.
+
+    The title is truncated (with a trailing ``…``) if it would exceed
+    ``name_max - reserved``.
+    """
     # Replace path separators and other problematic chars with a dash
     title = re.sub(r"[/\\]", " - ", title)
     # Remove characters illegal on Windows/Linux/macOS: : * ? " < > |
@@ -1200,24 +1287,90 @@ def _sanitise_title(title):
     # Collapse multiple spaces/dashes
     title = re.sub(r"\s{2,}", " ", title).strip()
     title = re.sub(r"-{2,}", "-", title).strip(" -")
-    return title or "video"
+    title = title or "video"
+
+    # Truncate to stay under the filesystem limit
+    limit = name_max - reserved
+    if name_unit == "chars":
+        # Windows: limit is in UTF-16 characters ≈ Python str length
+        ellipsis_cost = 1  # "…" is 1 character
+        measure = len
+    else:
+        # POSIX: limit is in bytes (UTF-8 on modern systems)
+        ellipsis_cost = 3  # "…" is 3 UTF-8 bytes
+        measure = lambda s: len(s.encode("utf-8"))
+
+    if measure(title) > limit:
+        while measure(title) > limit - ellipsis_cost:
+            title = title[:-1]
+        title = title.rstrip() + "…"
+
+    return title
 
 
 def _resolve_outtmpl(config, title, output_path_override):
-    """Determine the output template string."""
+    """Determine the output template string.
+
+    Enforces both the filename-component limit (``NAME_MAX``) and the
+    full-path limit (``PATH_MAX``) for the target filesystem, truncating
+    the title further if the assembled absolute path would be too long.
+    """
     prefix = config.get("title_prefix", "")
     postfix = config.get("title_postfix", "")
-    effective_title = _sanitise_title(f"{prefix}{title}{postfix}")
 
     out = output_path_override or config.get("output_path")
+
+    # Determine the output directory to query its filesystem limits
+    if out and (out.endswith(os.sep) or os.path.isdir(out)):
+        out_dir = out
+    elif out:
+        out_dir = os.path.dirname(out) or "."
+    else:
+        out_dir = "."
+
+    name_max, path_max, name_unit = _fs_limits(out_dir)
+
+    # --- Pass 1: enforce NAME_MAX (filename component) ---
+    effective_title = _sanitise_title(
+        f"{prefix}{title}{postfix}", name_max=name_max, name_unit=name_unit
+    )
+
     if not out:
-        return f"{effective_title}.%(ext)s"
+        outtmpl = f"{effective_title}.%(ext)s"
+    elif out.endswith(os.sep) or os.path.isdir(out):
+        outtmpl = os.path.join(out, f"{effective_title}.%(ext)s")
+    else:
+        _, ext = os.path.splitext(out)
+        return out if ext else f"{out}.%(ext)s"
 
-    if out.endswith(os.sep) or os.path.isdir(out):
-        return os.path.join(out, f"{effective_title}.%(ext)s")
+    # --- Pass 2: enforce PATH_MAX (full absolute path) ---
+    # Estimate the worst-case full path length using a realistic max
+    # extension + yt-dlp temp suffix (e.g. ".webm.part-Frag9999.part").
+    suffix_budget = 30  # same as the NAME_MAX reserved amount
+    abs_path = os.path.abspath(outtmpl.replace("%(ext)s", "x" * 5))
+    if name_unit == "chars":
+        measure = len
+        ellipsis_cost = 1
+    else:
+        measure = lambda s: len(s.encode("utf-8"))
+        ellipsis_cost = 3
 
-    _, ext = os.path.splitext(out)
-    return out if ext else f"{out}.%(ext)s"
+    path_len = measure(abs_path) + suffix_budget
+    if path_len > path_max:
+        # How much the title needs to shrink
+        overshoot = path_len - path_max
+        title_raw = f"{prefix}{title}{postfix}"
+        # Re-sanitise with a tighter name_max to shave off the overshoot
+        tighter = name_max - overshoot - ellipsis_cost
+        if tighter < 20:
+            tighter = 20  # absolute floor so filenames stay readable
+        effective_title = _sanitise_title(title_raw, name_max=tighter, name_unit=name_unit)
+        if not out:
+            outtmpl = f"{effective_title}.%(ext)s"
+        else:
+            outtmpl = os.path.join(out, f"{effective_title}.%(ext)s")
+
+    return outtmpl
 
 
 def _display_outtmpl(outtmpl):

@@ -171,7 +171,9 @@ class _ProgressTracker:
     def _format_rate(val, base, suffix):
         for prefix in ("", "K", "M", "G", "T"):
             if abs(val) < base:
-                return f"{val:.1f} {prefix}{suffix}" if prefix else f"{int(val)} {suffix}"
+                return (
+                    f"{val:.1f} {prefix}{suffix}" if prefix else f"{int(val)} {suffix}"
+                )
             val /= base
         return f"{val:.1f} P{suffix}"
 
@@ -372,7 +374,6 @@ class _Style:
     @classmethod
     def _print(cls, msg):
         """Print a message, handling progress bar if active."""
-        global _tracker
         if _tracker is not None:
             _tracker.print_live(msg)
         else:
@@ -490,20 +491,22 @@ def _expand_paths(paths, extensions, max_depth=None):
     """Expand a list of file/directory paths into individual file paths.
 
     For each entry in *paths*:
-    - If it is a file, include it as-is.
-    - If it is a directory, recursively include every file whose extension
-      (lower-cased) is in *extensions*.  Files are sorted alphabetically at
-      each directory level so that numeric prefixes like ``01-``, ``02-``
-      control ordering.
-    - Otherwise, include it as-is (downstream code will report the error).
 
-    *extensions* should be a set of lowercased suffixes including the dot,
-    e.g. ``{".txt"}`` or ``{".toml"}``.
+    - If it is a file, include it as-is.
+    - If it is a directory, recursively include every file whose
+        extension (lower-cased) is in *extensions*.  Files are sorted
+        alphabetically at each directory level so that numeric prefixes
+        like ``01-``, ``02-`` control ordering.
+    - Otherwise, include it as-is (downstream code reports the error).
+
+    *extensions* should be a set of lowercased suffixes including the
+    dot, e.g. ``{".txt"}`` or ``{".toml"}``.
 
     *max_depth* controls how deep into subdirectories to recurse:
-    - ``None``  – no limit (fully recursive)
-    - ``0``     – directory itself only (no subdirectories, same as before)
-    - ``1``     – direct children directories, etc.
+
+    - ``None`` -- no limit (fully recursive).
+    - ``0`` -- directory itself only (no subdirectories).
+    - ``1`` -- direct children directories, etc.
     """
     expanded = []
     for p in paths:
@@ -535,7 +538,9 @@ def _collect_from_dir(dirpath, extensions, max_depth, current_depth):
                 results.append(full)
         elif os.path.isdir(full):
             if max_depth is None or current_depth < max_depth:
-                results.extend(_collect_from_dir(full, extensions, max_depth, current_depth + 1))
+                results.extend(
+                    _collect_from_dir(full, extensions, max_depth, current_depth + 1)
+                )
     return results
 
 
@@ -769,7 +774,9 @@ def build_arg_parser():
         help="Automatically use each page URL as the Referer header",
     )
     p.add_argument("--cookies", help="Path to a Netscape-format cookies file")
-    p.add_argument("--user-agent", help="Custom User-Agent string for yt-dlp and browser requests")
+    p.add_argument(
+        "--user-agent", help="Custom User-Agent string for yt-dlp and browser requests"
+    )
     p.add_argument(
         "--header",
         action="append",
@@ -786,7 +793,9 @@ def build_arg_parser():
         "--quality",
         help="yt-dlp format / quality selector (e.g. 'bestvideo+bestaudio')",
     )
-    p.add_argument("--transcode", help="Transcode to this format after download (e.g. mp4, mkv)")
+    p.add_argument(
+        "--transcode", help="Transcode to this format after download (e.g. mp4, mkv)"
+    )
 
     # yt-dlp binary options
     ydlp = p.add_argument_group("yt-dlp binary")
@@ -846,7 +855,9 @@ def build_arg_parser():
         help="Filtering strictness for the built-in adblocker: "
         "'basic', 'optimal', or 'complete' (default)",
     )
-    adb.add_argument("--adblock-extension", help="Path to a custom .crx adblocker extension file")
+    adb.add_argument(
+        "--adblock-extension", help="Path to a custom .crx adblocker extension file"
+    )
 
     # Proxy
     prx = p.add_argument_group("proxy")
@@ -1109,7 +1120,9 @@ def _build_per_url_parser():
     p.add_argument("--localstorage", action="append")
     p.add_argument("--extractor")
     p.add_argument("--extractors")
-    p.add_argument("--use-selenium-session-for-download", action="store_true", default=None)
+    p.add_argument(
+        "--use-selenium-session-for-download", action="store_true", default=None
+    )
     p.add_argument("--generic-impersonate", action="store_true", default=None)
     p.add_argument("--thumbnail", action="store_true", default=None)
     p.add_argument("--thumbnail-only", action="store_true", default=None)
@@ -1221,11 +1234,12 @@ def _fs_limits(path):
 
     Returns ``(name_max, path_max, unit)`` where:
 
-    - *name_max* — max bytes (POSIX) or characters (Windows) for a single
-      filename component (e.g. 255 on ext4, 143 on eCryptfs).
-    - *path_max* — max bytes (POSIX) or characters (Windows) for the full
-      absolute path (e.g. 4096 on Linux, 1024 on macOS, 260 on Windows).
-    - *unit* — ``"bytes"`` on POSIX, ``"chars"`` on Windows.
+    - *name_max* -- max bytes (POSIX) or characters (Windows) for a
+        single filename component (e.g. 255 on ext4, 143 on eCryptfs).
+    - *path_max* -- max bytes (POSIX) or characters (Windows) for the
+        full absolute path (e.g. 4096 on Linux, 1024 on macOS, 260 on
+        Windows).
+    - *unit* -- ``"bytes"`` on POSIX, ``"chars"`` on Windows.
     """
     # Resolve to an existing directory so the query succeeds
     p = os.path.abspath(path) if path else os.getcwd()
@@ -1320,7 +1334,9 @@ def _sanitise_title(title, name_max=255, name_unit="bytes", reserved=30):
     else:
         # POSIX: limit is in bytes (UTF-8 on modern systems)
         ellipsis_cost = 3  # "…" is 3 UTF-8 bytes
-        measure = lambda s: len(s.encode("utf-8"))
+
+        def measure(s):
+            return len(s.encode("utf-8"))
 
     if measure(title) > limit:
         while measure(title) > limit - ellipsis_cost:
@@ -1374,7 +1390,10 @@ def _resolve_outtmpl(config, title, output_path_override):
         measure = len
         ellipsis_cost = 1
     else:
-        measure = lambda s: len(s.encode("utf-8"))
+
+        def measure(s):
+            return len(s.encode("utf-8"))
+
         ellipsis_cost = 3
 
     path_len = measure(abs_path) + suffix_budget
@@ -1384,9 +1403,10 @@ def _resolve_outtmpl(config, title, output_path_override):
         title_raw = f"{prefix}{title}{postfix}"
         # Re-sanitise with a tighter name_max to shave off the overshoot
         tighter = name_max - overshoot - ellipsis_cost
-        if tighter < 20:
-            tighter = 20  # absolute floor so filenames stay readable
-        effective_title = _sanitise_title(title_raw, name_max=tighter, name_unit=name_unit)
+        tighter = max(tighter, 20)  # absolute floor so filenames stay readable
+        effective_title = _sanitise_title(
+            title_raw, name_max=tighter, name_unit=name_unit
+        )
         if not out:
             outtmpl = f"{effective_title}.%(ext)s"
         else:
@@ -1447,7 +1467,9 @@ def build_ydl_opts(config, title, output_path_override=None):
     # Transcoding (post-processor)
     transcode = config.get("transcode")
     if transcode:
-        opts["postprocessors"] = [{"key": "FFmpegVideoConvertor", "preferedformat": transcode}]
+        opts["postprocessors"] = [
+            {"key": "FFmpegVideoConvertor", "preferedformat": transcode}
+        ]
 
     # Referrer
     referrer = config.get("referrer")
@@ -1502,7 +1524,9 @@ def build_ydl_opts(config, title, output_path_override=None):
     if config.get("generic_impersonate"):
         ytdlp_args = f"{ytdlp_args or ''} --extractor-args generic:impersonate".strip()
     if ytdlp_args:
-        extra_tokens = shlex.split(ytdlp_args) if isinstance(ytdlp_args, str) else list(ytdlp_args)
+        extra_tokens = (
+            shlex.split(ytdlp_args) if isinstance(ytdlp_args, str) else list(ytdlp_args)
+        )
         try:
             _, _, _, extra_opts = yt_dlp.parse_options(extra_tokens)
             # Don't let extra args clobber our explicit output template
@@ -1658,7 +1682,9 @@ def _build_system_ytdlp_cmd(config, m3u8_url, title, output_path_override=None):
     if config.get("generic_impersonate"):
         ytdlp_args = f"{ytdlp_args or ''} --extractor-args generic:impersonate".strip()
     if ytdlp_args:
-        extra_tokens = shlex.split(ytdlp_args) if isinstance(ytdlp_args, str) else list(ytdlp_args)
+        extra_tokens = (
+            shlex.split(ytdlp_args) if isinstance(ytdlp_args, str) else list(ytdlp_args)
+        )
         cmd.extend(extra_tokens)
 
     cmd.append(m3u8_url)
@@ -2124,7 +2150,10 @@ def _extract_urls_from_network_logs(driver):
                 path = req_url.split("?")[0].split("#")[0]
                 if ".m3u8" in path:
                     m3u8_urls.append(req_url)
-                elif any(path.endswith(ext) or (ext + "/") in path for ext in _VIDEO_EXTENSIONS):
+                elif any(
+                    path.endswith(ext) or (ext + "/") in path
+                    for ext in _VIDEO_EXTENSIONS
+                ):
                     video_urls.append(req_url)
             except (KeyError, json.JSONDecodeError):
                 continue
@@ -2151,11 +2180,15 @@ def extract_m3u8(driver, url):
 
     # --- Direct video URLs (mp4, webm, etc.) ---
     exts = "|".join(re.escape(e) for e in _VIDEO_EXTENSIONS)
-    video_pattern = r'(https?://[^\s"\'>]+(?:' + exts + r')(?:/[^\s"\'>]*)?(?:\?[^\s"\'>]*)?)'
+    video_pattern = (
+        r'(https?://[^\s"\'>]+(?:' + exts + r')(?:/[^\s"\'>]*)?(?:\?[^\s"\'>]*)?)'
+    )
     video_matches = re.findall(video_pattern, page_source)
 
     # Also check network logs
-    net_m3u8, net_video, request_headers_by_url = _extract_urls_from_network_logs(driver)
+    net_m3u8, net_video, request_headers_by_url = _extract_urls_from_network_logs(
+        driver
+    )
     m3u8_matches.extend(net_m3u8)
     video_matches.extend(net_video)
 
@@ -2193,9 +2226,13 @@ def _filter_urls(urls, pattern, label):
         if filtered:
             dropped = len(urls) - len(filtered)
             if dropped:
-                log.info(f"{label} filter '{pattern}' matched {len(filtered)}/{len(urls)} URLs")
+                log.info(
+                    f"{label} filter '{pattern}' matched {len(filtered)}/{len(urls)} URLs"
+                )
             return filtered
-        log.warn(f"{label} filter '{pattern}' matched nothing — using all {len(urls)} URLs")
+        log.warn(
+            f"{label} filter '{pattern}' matched nothing — using all {len(urls)} URLs"
+        )
         return urls
     except re.error as e:
         log.warn(f"Invalid {label.lower()} filter regex '{pattern}': {e}")
@@ -2236,7 +2273,9 @@ def _interactive_select(urls, label="stream"):
         return urls
 
     if not sys.stdin.isatty():
-        log.warn("Interactive selection unavailable (stdin is not a TTY) — falling back to first")
+        log.warn(
+            "Interactive selection unavailable (stdin is not a TTY) — falling back to first"
+        )
         return [urls[0]]
 
     # Pause the progress bar so it doesn't overwrite the prompt
@@ -2265,7 +2304,9 @@ def _interactive_select_loop(urls, label):
 
     while True:
         try:
-            raw = input(f"Enter number(s) to download (e.g. 1,3 or 1-3 or 'all') [{1}]: ").strip()
+            raw = input(
+                f"Enter number(s) to download (e.g. 1,3 or 1-3 or 'all') [{1}]: "
+            ).strip()
         except (EOFError, KeyboardInterrupt):
             print()
             log.warn("Selection cancelled — falling back to first")
@@ -2333,7 +2374,9 @@ def _select_video_urls(video_urls, config, page_url):
 def _download_m3u8(m3u8_url, effective_config, page_title, output_path_override):
     """Download a single m3u8 URL using either the library or system yt-dlp."""
     extra = effective_config.get("_extra_outputs", [])
-    use_system = effective_config.get("use_system_ytdlp") or effective_config.get("yt_dlp_path")
+    use_system = effective_config.get("use_system_ytdlp") or effective_config.get(
+        "yt_dlp_path"
+    )
     if use_system:
         cmd, outtmpl = _build_system_ytdlp_cmd(
             effective_config, m3u8_url, page_title, output_path_override
@@ -2347,7 +2390,9 @@ def _download_m3u8(m3u8_url, effective_config, page_title, output_path_override)
         else:
             log.error(f"yt-dlp exited with code {result.returncode}")
     else:
-        ydl_opts, outtmpl = build_ydl_opts(effective_config, page_title, output_path_override)
+        ydl_opts, outtmpl = build_ydl_opts(
+            effective_config, page_title, output_path_override
+        )
         display_out = _display_outtmpl(outtmpl)
         log.step(f"Downloading {display_out}")
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -2362,7 +2407,11 @@ def _try_ytdlp_direct(url, effective_config, output_path_override=None):
     Returns True on success, False if yt-dlp can't handle the URL.
     """
     extractors_csv = effective_config.get("extractors")
-    allowed = [e.strip() for e in extractors_csv.split(",") if e.strip()] if extractors_csv else []
+    allowed = (
+        [e.strip() for e in extractors_csv.split(",") if e.strip()]
+        if extractors_csv
+        else []
+    )
 
     info = _probe_ytdlp(url, effective_config, allowed)
     if not info:
@@ -2372,7 +2421,9 @@ def _try_ytdlp_direct(url, effective_config, output_path_override=None):
     extractor_name = info.get("extractor", "unknown")
     log.info(f"yt-dlp native extractor matched: {extractor_name}")
 
-    return _run_ytdlp_direct(url, effective_config, title, allowed, output_path_override)
+    return _run_ytdlp_direct(
+        url, effective_config, title, allowed, output_path_override
+    )
 
 
 def _probe_ytdlp(url, config, allowed):
@@ -2400,10 +2451,14 @@ def _probe_ytdlp(url, config, allowed):
 def _run_ytdlp_direct(url, effective_config, title, allowed, output_path_override):
     """Run yt-dlp natively on a URL (after a successful probe)."""
     extra = effective_config.get("_extra_outputs", [])
-    use_system = effective_config.get("use_system_ytdlp") or effective_config.get("yt_dlp_path")
+    use_system = effective_config.get("use_system_ytdlp") or effective_config.get(
+        "yt_dlp_path"
+    )
 
     if use_system:
-        cmd, outtmpl = _build_system_ytdlp_cmd(effective_config, url, title, output_path_override)
+        cmd, outtmpl = _build_system_ytdlp_cmd(
+            effective_config, url, title, output_path_override
+        )
         for ext_name in allowed:
             cmd.insert(-1, "--ies")
             cmd.insert(-1, ext_name)
@@ -2435,7 +2490,9 @@ def _run_ytdlp_direct(url, effective_config, title, allowed, output_path_overrid
         return False
 
 
-def fetch_m3u8_and_download(url, config, output_path_override=None, per_url_overrides=None):
+def fetch_m3u8_and_download(
+    url, config, output_path_override=None, per_url_overrides=None
+):
     """Extract the m3u8 URL from a page and download with yt-dlp.
 
     Returns (True, None) on success or (False, error_message) on failure.
@@ -2467,7 +2524,9 @@ def fetch_m3u8_and_download(url, config, output_path_override=None, per_url_over
     effective_config["_extra_outputs"] = extra_outputs
 
     # If use_base_url_as_referrer, set referrer from the page URL
-    if effective_config.get("use_base_url_as_referrer") and not effective_config.get("referrer"):
+    if effective_config.get("use_base_url_as_referrer") and not effective_config.get(
+        "referrer"
+    ):
         parsed = urlparse(url)
         effective_config["referrer"] = f"{parsed.scheme}://{parsed.netloc}/"
 
@@ -2494,7 +2553,9 @@ def fetch_m3u8_and_download(url, config, output_path_override=None, per_url_over
     _apply_localstorage(driver, effective_config, url)
 
     try:
-        m3u8_urls, video_urls, page_title, request_headers_by_url = extract_m3u8(driver, url)
+        m3u8_urls, video_urls, page_title, request_headers_by_url = extract_m3u8(
+            driver, url
+        )
 
         browser_cookie_pairs = {}
         if effective_config.get("use_selenium_session_for_download"):
@@ -2529,8 +2590,12 @@ def fetch_m3u8_and_download(url, config, output_path_override=None, per_url_over
                     download_config["_browser_headers"] = _header_lookup_for_url(
                         request_headers_by_url, m3u8_url
                     )
-                    download_config["_browser_cookie_pairs"] = dict(browser_cookie_pairs)
-                _download_m3u8(m3u8_url, download_config, page_title, output_path_override)
+                    download_config["_browser_cookie_pairs"] = dict(
+                        browser_cookie_pairs
+                    )
+                _download_m3u8(
+                    m3u8_url, download_config, page_title, output_path_override
+                )
         else:
             log.info(f"Found {len(video_urls)} direct video URL(s)")
             selected = _select_video_urls(video_urls, effective_config, url)
@@ -2542,8 +2607,12 @@ def fetch_m3u8_and_download(url, config, output_path_override=None, per_url_over
                     download_config["_browser_headers"] = _header_lookup_for_url(
                         request_headers_by_url, vid_url
                     )
-                    download_config["_browser_cookie_pairs"] = dict(browser_cookie_pairs)
-                _download_m3u8(vid_url, download_config, page_title, output_path_override)
+                    download_config["_browser_cookie_pairs"] = dict(
+                        browser_cookie_pairs
+                    )
+                _download_m3u8(
+                    vid_url, download_config, page_title, output_path_override
+                )
 
         return True, None
 
@@ -2707,7 +2776,9 @@ def download_from_file(file_paths, config):
             for i, (url, overrides) in enumerate(entries, 1):
                 log.step(f"[{i}/{len(entries)}] {url}")
                 try:
-                    ok, err = fetch_m3u8_and_download(url, config, per_url_overrides=overrides)
+                    ok, err = fetch_m3u8_and_download(
+                        url, config, per_url_overrides=overrides
+                    )
                     results.append((url, ok, err))
                     if ok:
                         _tracker.record_success()
@@ -2733,7 +2804,9 @@ def download_from_file(file_paths, config):
             _tracker.setup_scroll_region()
             with ThreadPoolExecutor(max_workers=workers) as pool:
                 futures = {
-                    pool.submit(fetch_m3u8_and_download, url, config, None, overrides): url
+                    pool.submit(
+                        fetch_m3u8_and_download, url, config, None, overrides
+                    ): url
                     for url, overrides in entries
                 }
                 for future in as_completed(futures):

@@ -78,20 +78,20 @@ a file (`urls.txt` by default).
 
 ### General options
 
-| Flag                         | Description                                                                                                         |
-| ---------------------------- | ------------------------------------------------------------------------------------------------------------------- |
-| `url`                        | URL to download directly (positional, optional)                                                                     |
-| `-f`, `--urls-file`          | Path to URL list file or directory (repeatable; directories load all `.txt` files)                                   |
-| `-o`, `--output-path`        | Output directory or filename template (repeatable; first is download target, extras receive copies)                  |
-| `--title-prefix`             | String to prepend to every filename                                                                                 |
-| `--title-postfix`            | String to append to every filename (before extension)                                                               |
-| `--referrer`                 | Referer header for requests                                                                                         |
-| `--use-base-url-as-referrer` | Auto-set referer from each page's base URL                                                                          |
-| `--cookies`                  | Path to Netscape-format cookies file                                                                                |
-| `--user-agent`               | Custom User-Agent for yt-dlp and browser requests                                                                   |
-| `-q`, `--quality`            | yt-dlp format selector (e.g. `bestvideo+bestaudio`)                                                                 |
-| `--transcode`                | Transcode to format after download (e.g. `mp4`, `mkv`)                                                              |
-| `-c`, `--config`             | Path to TOML config file or directory (repeatable, later files override; directories load all `.toml` files)         |
+| Flag                         | Description                                                                                                                 |
+| ---------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `url`                        | URL to download directly (positional, optional)                                                                             |
+| `-f`, `--urls-file`          | Path to URL list file or directory (repeatable; directories load all `.txt` files)                                          |
+| `-o`, `--output-path`        | Output directory or filename template (repeatable; first is download target, extras receive copies)                         |
+| `--title-prefix`             | String to prepend to every filename                                                                                         |
+| `--title-postfix`            | String to append to every filename (before extension)                                                                       |
+| `--referrer`                 | Referer header for requests                                                                                                 |
+| `--use-base-url-as-referrer` | Auto-set referer from each page's base URL                                                                                  |
+| `--cookies`                  | Path to Netscape-format cookies file                                                                                        |
+| `--user-agent`               | Custom User-Agent for yt-dlp and browser requests                                                                           |
+| `-q`, `--quality`            | yt-dlp format selector (e.g. `bestvideo+bestaudio`)                                                                         |
+| `--transcode`                | Transcode to format after download (e.g. `mp4`, `mkv`)                                                                      |
+| `-c`, `--config`             | Path to TOML config file or directory (repeatable, later files override; directories load all `.toml` files)                |
 | `--scan-depth`               | Max directory recursion depth for `-f`/`-c` directories (`0` = top-level only (default), `1` = one level, `-1` = unlimited) |
 
 ### Download modes
@@ -122,7 +122,7 @@ a file (`urls.txt` by default).
 | Flag               | Description                                                                          |
 | ------------------ | ------------------------------------------------------------------------------------ |
 | `-p`, `--parallel` | Number of parallel downloads: a number, `all` (default), `cores`, or `logical_cores` |
-| `--speed-unit`     | Speed display in progress bar: `bytes` (default, e.g. MB/s) or `bits` (e.g. Mbps)   |
+| `--speed-unit`     | Speed display in progress bar: `bytes` (default, e.g. MB/s) or `bits` (e.g. Mbps)    |
 | `--scan-depth`     | Max recursion depth when `-f` or `-c` is a directory (default `0`, `-1` = unlimited) |
 
 ### Stream selection
@@ -185,12 +185,12 @@ Selenium and yt-dlp for auth-gated pages.
 
 ### Watch mode
 
-| Flag                       | Description                                                              |
-| -------------------------- | ------------------------------------------------------------------------ |
-| `-w`, `--watch`            | Watch clipboard for URLs and download automatically                      |
-| `--watch-interval`         | Polling interval in seconds (default: `1.0`)                             |
-| `--watch-use-current`      | Download the current clipboard URL immediately when watch starts (default) |
-| `--no-watch-use-current`   | Ignore the current clipboard contents when watch starts                  |
+| Flag                     | Description                                                                |
+| ------------------------ | -------------------------------------------------------------------------- |
+| `-w`, `--watch`          | Watch clipboard for URLs and download automatically                        |
+| `--watch-interval`       | Polling interval in seconds (default: `1.0`)                               |
+| `--watch-use-current`    | Download the current clipboard URL immediately when watch starts (default) |
+| `--no-watch-use-current` | Ignore the current clipboard contents when watch starts                    |
 
 ## Configuration
 

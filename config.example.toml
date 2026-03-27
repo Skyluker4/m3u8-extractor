@@ -94,6 +94,10 @@
 # video_and_captions_only = false      # Download video and captions only (no audio)
 # overwrite = true                     # Overwrite existing files (false to skip)
 
+# ── Watch mode ───────────────────────────────────────────────────────────────
+
+# watch_use_current = true             # Download current clipboard URL when --watch starts
+
 # ── URL rules ────────────────────────────────────────────────────────────────
 # Pattern-matched per-site config. All matching rules are merged in order.
 # Any config key above can be used inside a rule.

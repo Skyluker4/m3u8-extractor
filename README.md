@@ -185,10 +185,12 @@ Selenium and yt-dlp for auth-gated pages.
 
 ### Watch mode
 
-| Flag               | Description                                         |
-| ------------------ | --------------------------------------------------- |
-| `-w`, `--watch`    | Watch clipboard for URLs and download automatically |
-| `--watch-interval` | Polling interval in seconds (default: `1.0`)        |
+| Flag                       | Description                                                              |
+| -------------------------- | ------------------------------------------------------------------------ |
+| `-w`, `--watch`            | Watch clipboard for URLs and download automatically                      |
+| `--watch-interval`         | Polling interval in seconds (default: `1.0`)                             |
+| `--watch-use-current`      | Download the current clipboard URL immediately when watch starts (default) |
+| `--no-watch-use-current`   | Ignore the current clipboard contents when watch starts                  |
 
 ## Configuration
 
@@ -219,6 +221,7 @@ transcode = "mp4"
 parallel = "all"
 speed_unit = "bytes"   # "bytes" (KB/s, MB/s) or "bits" (Kbps, Mbps)
 scan_depth = 0         # directory recursion depth (0 = top-level, -1 = unlimited)
+watch_use_current = true  # download current clipboard URL when --watch starts
 
 referrer = ""
 use_base_url_as_referrer = false
@@ -324,6 +327,7 @@ M3U8_AUDIO_ONLY=false
 M3U8_VIDEO_ONLY=false
 M3U8_VIDEO_AND_CAPTIONS_ONLY=false
 M3U8_SCAN_DEPTH=0
+M3U8_WATCH_USE_CURRENT=true
 ```
 
 Boolean values accept `1`, `true`, `yes`, `on` (case-insensitive).
@@ -465,6 +469,9 @@ m3u8-extractor --audio-only \
 
 # Watch clipboard, download captions too
 m3u8-extractor --watch --captions
+
+# Watch clipboard but skip whatever is currently copied
+m3u8-extractor --watch --no-watch-use-current
 
 # Save to multiple locations
 m3u8-extractor -o downloads/ -o /mnt/nas/videos/ \

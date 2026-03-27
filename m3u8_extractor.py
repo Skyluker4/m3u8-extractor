@@ -588,6 +588,7 @@ DEFAULTS = {
     "ytdlp_args": None,  # extra raw arguments forwarded to yt-dlp
     "speed_unit": "bytes",  # "bytes" (KB/s, MB/s) or "bits" (Kbps, Mbps)
     "scan_depth": 0,  # max directory recursion depth (0 = no recursion, None = unlimited)
+    "watch_use_current": True,  # download whatever is in the clipboard when watch starts
 }
 
 # Map config keys -> environment variable names
@@ -633,6 +634,7 @@ ENV_MAP = {
     "ytdlp_args": "M3U8_YTDLP_ARGS",
     "speed_unit": "M3U8_SPEED_UNIT",
     "scan_depth": "M3U8_SCAN_DEPTH",
+    "watch_use_current": "M3U8_WATCH_USE_CURRENT",
 }
 
 BOOL_KEYS = {
@@ -650,6 +652,7 @@ BOOL_KEYS = {
     "video_only",
     "video_and_captions_only",
     "overwrite",
+    "watch_use_current",
 }
 
 
@@ -985,6 +988,18 @@ def build_arg_parser():
         default=1.0,
         help="Clipboard polling interval in seconds (default: 1.0)",
     )
+    p.add_argument(
+        "--watch-use-current",
+        action="store_true",
+        default=None,
+        help="Download the current clipboard URL immediately when watch starts (default)",
+    )
+    p.add_argument(
+        "--no-watch-use-current",
+        action="store_true",
+        default=None,
+        help="Ignore the current clipboard contents when watch starts",
+    )
 
     return p
 
@@ -1033,6 +1048,7 @@ def load_cli_config(args_ns):
         "ytdlp_args": args_ns.ytdlp_args,
         "speed_unit": args_ns.speed_unit,
         "scan_depth": args_ns.scan_depth,
+        "watch_use_current": args_ns.watch_use_current,
     }
     for key, val in mapping.items():
         if val is not None:
@@ -1043,6 +1059,12 @@ def load_cli_config(args_ns):
         cfg["overwrite"] = False
     elif getattr(args_ns, "overwrite", None):
         cfg["overwrite"] = True
+
+    # Handle --watch-use-current / --no-watch-use-current pair
+    if getattr(args_ns, "no_watch_use_current", None):
+        cfg["watch_use_current"] = False
+    elif getattr(args_ns, "watch_use_current", None):
+        cfg["watch_use_current"] = True
 
     return cfg
 
@@ -2781,16 +2803,22 @@ def watch_clipboard(config, interval=1.0):
     immediately without waiting for the current download to finish.
     The ``parallel`` config controls the pool size (queue depth).
     """
+    use_current = config.get("watch_use_current", True)
     log.header("Watching clipboard for URLs  (Ctrl+C to stop)")
     seen = set()
     last_text = ""
+    initial_url = None
     results = []
 
-    # Prime with current clipboard so we don't immediately download
-    # whatever is already there
+    # Read the current clipboard
     last_text = _read_clipboard()
     if _looks_like_url(last_text):
-        seen.add(last_text.strip().split("\n")[0])
+        url = last_text.strip().split("\n")[0]
+        if use_current:
+            initial_url = url
+        else:
+            # Just mark it seen so we don't download it later
+            seen.add(url)
 
     # Resolve worker count — "all" has no fixed total in watch mode,
     # so cap at a generous upper bound.
@@ -2808,6 +2836,15 @@ def watch_clipboard(config, interval=1.0):
     pool = ThreadPoolExecutor(max_workers=max_workers)
     futures = {}  # future -> url
     start_time = time.time()
+
+    # Submit the initial clipboard URL if configured
+    if initial_url:
+        seen.add(initial_url)
+        _tracker.increment_total()
+        log.info(f"Current clipboard URL: {initial_url}")
+        future = pool.submit(fetch_m3u8_and_download, initial_url, config)
+        futures[future] = initial_url
+        _tracker.draw_bar()
 
     try:
         while True:

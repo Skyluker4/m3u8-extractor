@@ -108,11 +108,17 @@ class _ProgressTracker:
         self.draw_bar()
 
     def flush_buffer(self):
-        """Replay all buffered output lines as normal terminal text."""
+        """Replay all buffered output lines as normal terminal text.
+
+        In non-TTY mode (piped output) the live prints from
+        :meth:`print_live` were already permanent, so replaying would
+        duplicate them.  The replay is only needed when a scroll region
+        was active (TTY) because that output is lost on region reset.
+        """
         with self._lock:
             lines = list(self._output_buffer)
             self._output_buffer.clear()
-        if not lines:
+        if not lines or not self._enabled:
             return
         for line in lines:
             print(line)

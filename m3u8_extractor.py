@@ -117,6 +117,11 @@ class _ProgressTracker:
         for line in lines:
             print(line)
 
+    def increment_total(self):
+        """Add one to the total count (for unbounded mode like clipboard watch)."""
+        with self._lock:
+            self.total += 1
+
     @property
     def remaining(self):
         return self.total - self.completed - self.failed
@@ -2617,10 +2622,16 @@ def _looks_like_url(text):
 
 
 def watch_clipboard(config, interval=1.0):
-    """Poll the clipboard for new URLs and download them automatically."""
+    """Poll the clipboard for new URLs and download them automatically.
+
+    Downloads run in a thread pool so new clipboard URLs are picked up
+    immediately without waiting for the current download to finish.
+    The ``parallel`` config controls the pool size (queue depth).
+    """
     log.header("Watching clipboard for URLs  (Ctrl+C to stop)")
     seen = set()
     last_text = ""
+    results = []
 
     # Prime with current clipboard so we don't immediately download
     # whatever is already there
@@ -2628,8 +2639,45 @@ def watch_clipboard(config, interval=1.0):
     if _looks_like_url(last_text):
         seen.add(last_text.strip().split("\n")[0])
 
+    # Resolve worker count — "all" has no fixed total in watch mode,
+    # so cap at a generous upper bound.
+    max_workers = min(32, _resolve_worker_count(config.get("parallel", "all"), 32))
+    log.info(f"Parallel slots: {max_workers}")
+
+    global _tracker
+    _tracker = _ProgressTracker(
+        total=0,
+        speed_unit=config.get("speed_unit", "bytes"),
+        max_active=max_workers,
+    )
+    _tracker.setup_scroll_region()
+
+    pool = ThreadPoolExecutor(max_workers=max_workers)
+    futures = {}  # future -> url
+    start_time = time.time()
+
     try:
         while True:
+            # Collect completed downloads
+            done = [f for f in futures if f.done()]
+            for f in done:
+                url = futures.pop(f)
+                try:
+                    ok, err = f.result()
+                    results.append((url, ok, err))
+                    if ok:
+                        _tracker.record_success()
+                    else:
+                        _tracker.record_failure()
+                except Exception as exc:
+                    log.error(f"Failed: {url} — {exc}")
+                    results.append((url, False, str(exc)))
+                    _tracker.record_failure()
+                finally:
+                    _tracker.finish_bytes(url)
+                    _tracker.draw_bar()
+
+            # Poll clipboard
             time.sleep(interval)
             text = _read_clipboard()
             if not text or text == last_text:
@@ -2644,16 +2692,50 @@ def watch_clipboard(config, interval=1.0):
                 continue
 
             seen.add(url)
+            _tracker.increment_total()
             log.info(f"Clipboard URL detected: {url}")
-            try:
-                ok, err = fetch_m3u8_and_download(url, config)
-                if not ok:
-                    log.error(f"Failed: {url} — {err}")
-            except Exception as exc:
-                log.error(f"Failed: {url} — {exc}")
+            future = pool.submit(fetch_m3u8_and_download, url, config)
+            futures[future] = url
+            _tracker.draw_bar()
 
     except KeyboardInterrupt:
-        log.header(f"Stopped. Downloaded {len(seen)} URL(s).")
+        active = sum(1 for f in futures if not f.done())
+        if active:
+            log.info(f"Waiting for {active} active download(s) to finish…")
+    finally:
+        # Cancel queued-but-not-started tasks; wait for running ones
+        pool.shutdown(wait=True, cancel_futures=True)
+
+        # Collect results from any futures that finished during shutdown
+        for f, url in list(futures.items()):
+            if (
+                f.done()
+                and (url, True, None) not in results
+                and not any(r[0] == url for r in results)
+            ):
+                try:
+                    ok, err = f.result()
+                    results.append((url, ok, err))
+                    if ok:
+                        _tracker.record_success()
+                    else:
+                        _tracker.record_failure()
+                except Exception as exc:
+                    results.append((url, False, str(exc)))
+                    _tracker.record_failure()
+                finally:
+                    _tracker.finish_bytes(url)
+
+        tracker_ref = _tracker
+        tracker_ref.reset_scroll_region()
+        _tracker = None
+        tracker_ref.flush_buffer()
+
+        elapsed = time.time() - start_time
+        if results:
+            _print_summary(results, elapsed)
+        else:
+            log.header(f"Stopped. No downloads completed ({len(seen)} URL(s) seen).")
 
 
 # ---------------------------------------------------------------------------
